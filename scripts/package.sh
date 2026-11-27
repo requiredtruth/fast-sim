@@ -29,7 +29,15 @@ fi
 "$tools/aapt2" compile --dir android/res -o "$work/resources.zip"
 mkdir "$work/assets"
 cp index.html "$work/assets/"
-"$tools/aapt2" link -I "$platform" --manifest android/AndroidManifest.xml -A "$work/assets" -o "$work/unsigned.apk" "$work/resources.zip"
+version="$(sed -n '1s/^v//p' RELEASE)"
+if [[ ! "$version" =~ ^1\.0\.([0-9]+)$ ]]; then
+  echo "Expected a v1.0.x release version." >&2
+  exit 1
+fi
+version_code="$((10#${BASH_REMATCH[1]} + 1))"
+sed -e "s/android:versionCode=\"1\"/android:versionCode=\"$version_code\"/" \
+    -e "s/android:versionName=\"1.0.0\"/android:versionName=\"$version\"/" android/AndroidManifest.xml > "$work/AndroidManifest.xml"
+"$tools/aapt2" link -I "$platform" --manifest "$work/AndroidManifest.xml" -A "$work/assets" -o "$work/unsigned.apk" "$work/resources.zip"
 (cd "$work/dex" && zip -9 "$work/unsigned.apk" classes.dex)
 "$tools/zipalign" -f 4 "$work/unsigned.apk" "$work/aligned.apk"
 keystore="${FAST_SIM_KEYSTORE:-$work/fast-sim.p12}"
