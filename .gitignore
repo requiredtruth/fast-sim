@@ -1,0 +1,13 @@
+raw/
+build/
+footage/
+runs/
+*.inp
+.DS_Store
+.vscode/
+outonparole
+*.exe
+dist/
+sessions/
+builds/
+__pycache__/
