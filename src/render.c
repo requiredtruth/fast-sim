@@ -723,10 +723,11 @@ static GLuint make_tex(int w, int h, GLenum ifmt, GLenum fmt, GLenum type, GLenu
     return t;
 }
 
+static bool fbo_bad;
 static void fbo_check(const char *what)
 {
     GLenum s = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (s != GL_FRAMEBUFFER_COMPLETE) fprintf(stderr, "framebuffer %s incomplete: 0x%x\n", what, s);
+    if (s != GL_FRAMEBUFFER_COMPLETE) { fprintf(stderr, "framebuffer %s incomplete: 0x%x\n", what, s); fbo_bad = true; }
 }
 
 static void free_targets(void)
@@ -739,7 +740,17 @@ static void free_targets(void)
     T.w = 0;
 }
 
+static void make_targets_once(int w, int h);
 static void make_targets(int w, int h)
+{
+    fbo_bad = false;
+    make_targets_once(w, h);
+    // some phones list float targets but can't multisample them: drop to 8 bits, then to no MSAA
+    if (fbo_bad && (hdr_fmt != GL_RGBA8 || bloom_fmt != GL_RGBA8)) { hdr_fmt = bloom_fmt = GL_RGBA8; fbo_bad = false; make_targets_once(w, h); }
+    if (fbo_bad && MSAA > 1) { MSAA = 1; fbo_bad = false; make_targets_once(w, h); }
+}
+
+static void make_targets_once(int w, int h)
 {
     free_targets();
     T.w = w; T.h = h;
@@ -814,6 +825,7 @@ void render_init(void)
 #else
     const char *ver = "#version 330 core\n";
 #endif
+    if (getenv("LONGROAD_LDR")) { hdr_fmt = GL_RGBA8; bloom_fmt = GL_RGBA8; }
     if (quality == 0) { SH_SIZE = 1536; MSAA = 2; render_scale = 0.72f; }
     else if (quality == 1) { SH_SIZE = 2048; MSAA = 4; render_scale = 0.85f; }
     int n = snprintf(prelude, sizeof prelude,
@@ -941,6 +953,7 @@ static void scene_colors(float e)
     S.sky = mixv(S.sky, Vector3Scale(S.sky, 0.75f), over);
     S.fogden *= 1.6f + weather_fog * 9 + weather_dust * 11 + weather_rain * 2.5f + weather_snow * 5;
     S.grade[3] *= 1 - 0.25f * over;
+    if (hdr_fmt == GL_RGBA8) { S.expo = fmaxf(S.expo, 1.0f); S.bloom *= 0.5f; }   // 8-bit scene: no headroom above 1
     r_sun_col = S.lcol; r_amb_col = S.sky; r_fog_col = S.fog; r_night = S.night;
 }
 

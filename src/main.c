@@ -406,6 +406,7 @@ int main(int argc, char **argv)
             weather_force(t_weather);
         }
         if (t_touch) { extern bool touch_force; touch_force = true; }
+        if (getenv("LONGROAD_AMBUSH")) { sv.km = 20; raiders_ambush(); weapon_give(W_SHOTGUN); }
         int frames = (int)(shot_at * 60);
         for (int f = 0; f < frames && !WindowShouldClose(); f++) {
             Input in = { 0 };

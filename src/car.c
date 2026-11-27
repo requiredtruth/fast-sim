@@ -1558,6 +1558,7 @@ static void wear_tick(int ci, float dt)
         float thr = clampf(c->throttle, 0, 1);
         float rate = (0.0012f + 0.00045f * v + 0.005f * thr) * thirst[c->model];
         if (c->driver != PLAYER) rate *= 0.2f;
+        rate *= tune_fuel;
         c->fuel = fmaxf(0, c->fuel - rate * dt);
         float cool = 0.012f + 0.03f * clampf(c->radiator / 100, 0, 1) + (world_temp() < 10 ? 0.01f : 0);
         float hot = thr * 0.028f + (world_temp() > 30 ? 0.006f : 0);
