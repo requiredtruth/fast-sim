@@ -1091,3 +1091,5 @@ bool game_load(void)
     hud_big("Back on the road", 2.5f);
     return true;
 }
+
+int loot_force(int ci) { loot_open(ci); return 0; }

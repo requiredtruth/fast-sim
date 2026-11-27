@@ -456,6 +456,8 @@ static Mat tint(Mat m, float k)
 }
 static Mat M_STEEL, M_BLACK, M_DARK, M_WHITE;
 
+static float lsz(int l) { return l >= 0 && l < L_COUNT && layer_size[l] > 0 ? layer_size[l] : 2.0f; }
+
 static uint32_t vert(Buf *b, Vector3 p, Vector3 n, float u, float v, Mat m)
 {
     if (b->nv == b->cv) { b->cv = b->cv ? b->cv * 2 : 1024; b->v = realloc(b->v, b->cv * sizeof(Vtx)); }
@@ -494,7 +496,7 @@ static void quadv(int part, Vector3 o, Vector3 eu, Vector3 ev, float u0, float v
 
 static void hq(int part, float x0, float z0, float x1, float z1, float y, Mat m)
 {
-    float s = 1.0f / layer_size[m.layer];
+    float s = 1.0f / lsz(m.layer);
     quadv(part, V3(x0, y, z1), V3(x1 - x0, 0, 0), V3(0, 0, z0 - z1), x0 * s, z1 * s, x1 * s, z0 * s, m);
 }
 
@@ -511,10 +513,10 @@ static void vf(int part, int side, float a0, float a1, float c, float y0, float 
 }
 static void vfm(int part, int side, float a0, float a1, float c, float y0, float y1, Mat m)
 {
-    float s = 1.0f / layer_size[m.layer];
+    float s = 1.0f / lsz(m.layer);
     vf(part, side, a0, a1, c, y0, y1, m, a0 * s, a1 * s, y0 * s, y1 * s);
 }
-static float cell_w(int l) { return layer_size[l] > 0 ? layer_size[l] : 3; }
+static float cell_w(int l) { return lsz(l) > 0 ? lsz(l) : 3; }
 static void facade(int part, int side, float a0, float a1, float c, float y0, float y1, Mat m)
 {
     int l = m.layer;
@@ -583,7 +585,7 @@ static void disc(int part, Vector3 c, Vector3 nrm, float r, int n, Mat m)
 
 static void cyl(int part, float x, float y0, float z, float y1, float r, int n, Mat side, Mat top)
 {
-    tube(part, V3(x, y0, z), V3(x, y1, z), r, r, n, side, 1, (y1 - y0) / layer_size[side.layer]);
+    tube(part, V3(x, y0, z), V3(x, y1, z), r, r, n, side, 1, (y1 - y0) / lsz(side.layer));
     disc(part, V3(x, y1, z), V3(0, 1, 0), r, n, top);
 }
 
@@ -664,7 +666,7 @@ static Mat ground_mat(double s, float d)
     float snow = biome_mix((float)s, BIOME_SNOW);
     if (snow > 0.5f) grass *= 1 - sm(0.5f, 1, snow) * 0.8f;
     Mat m = M(L_SAND, ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
-    if (snow > 0.5f) { m.r = (uint8_t)mixf(m.r, 255, snow); m.g = (uint8_t)mixf(m.g, 255, snow); m.b = (uint8_t)mixf(m.b, 255, snow); }
+    if (snow > 0.5f) m = M(L_SNOW, 0xffffff);
     return mf(m, F_BLEND, grass);
 }
 
@@ -672,13 +674,13 @@ static void pine(Vector3 p, float h, bool snowy)
 {
     Mat bark = M(L_BARK, 0x9a8878);
     tube(GEO_SOLID, p, Vector3Add(p, V3(0, h * 0.35f, 0)), 0.22f * h / 10, 0.14f * h / 10, 6, bark, 1, 2);
-    uint32_t gc = snowy ? 0x8aa08a : 0x4a6a3a;
-    float k = rf(0.8f, 1.15f);
+    uint32_t gc = snowy ? 0x9ab89a : 0x7aa860;
+    float k = rf(0.85f, 1.15f);
     for (int i = 0; i < 4; i++) {
         float t = i / 4.0f;
         Mat m = tint(M(L_GRASS, gc), k * (0.9f + 0.1f * i));
         cone(Vector3Add(p, V3(0, h * (0.22f + 0.2f * t), 0)), h * (0.3f - 0.06f * i), h * (0.42f - 0.05f * i), 7, m);
-        if (snowy) cone(Vector3Add(p, V3(0, h * (0.22f + 0.2f * t) + h * 0.2f, 0)), h * (0.16f - 0.03f * i), h * (0.24f - 0.03f * i), 7, M(L_SAND, 0xf8f8ff));
+        if (snowy) cone(Vector3Add(p, V3(0, h * (0.22f + 0.2f * t) + h * 0.2f, 0)), h * (0.16f - 0.03f * i), h * (0.24f - 0.03f * i), 7, M(L_SNOW, 0xffffff));
     }
     add_box(p.x - 0.3f, p.y, p.z - 0.3f, p.x + 0.3f, p.y + h * 0.6f, p.z + 0.3f);
 }
@@ -757,21 +759,39 @@ static void shrub(Vector3 b, float s, uint32_t col)
 
 static void rock(Vector3 b, float s, uint32_t col)
 {
-    Vector3 p[8];
-    for (int k = 0; k < 8; k++)
-        p[k] = Vector3Add(b, V3((k & 1 ? 1 : -1) * s * rf(0.6f, 1.1f), (k & 2 ? s * rf(0.5f, 1.0f) : -0.25f * s), (k & 4 ? 1 : -1) * s * rf(0.6f, 1.1f)));
-    static const int f[6][4] = { { 0, 1, 3, 2 }, { 4, 6, 7, 5 }, { 0, 4, 5, 1 }, { 2, 3, 7, 6 }, { 0, 2, 6, 4 }, { 1, 5, 7, 3 } };
-    Mat m = tint(M(L_CONCRETE, col), rf(0.8f, 1.1f));
-    Vector3 c = Vector3Add(b, V3(0, s * 0.3f, 0));
-    for (int i = 0; i < 6; i++) {
-        Vector3 a = p[f[i][0]], bb = p[f[i][1]], cc = p[f[i][2]], d = p[f[i][3]];
-        Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(bb, a), Vector3Subtract(d, a)));
-        Vector3 mid = Vector3Scale(Vector3Add(Vector3Add(a, bb), Vector3Add(cc, d)), 0.25f);
-        if (Vector3DotProduct(n, Vector3Subtract(mid, c)) < 0) n = Vector3Negate(n);
-        float sc = 1 / layer_size[L_CONCRETE];
-        quad_pn(GEO_SOLID, a, bb, cc, d, n, a.x * sc, a.y * sc, cc.x * sc + 0.5f, cc.y * sc + 0.5f, m);
+    enum { SEG = 7, RING = 4 };
+    Vector3 p[RING + 1][SEG];
+    float sx = s * rf(0.8f, 1.3f), sy = s * rf(0.45f, 0.8f), sz = s * rf(0.8f, 1.3f), rot = rf(0, 6.28f);
+    for (int j = 0; j <= RING; j++)
+        for (int i = 0; i < SEG; i++) {
+            float ph = -0.35f + (PI * 0.5f + 0.35f) * j / RING, th = rot + i * 6.2832f / SEG;
+            float k = rf(0.78f, 1.12f);
+            float r = cosf(ph) * k;
+            p[j][i] = Vector3Add(b, V3(cosf(th) * r * sx, (sinf(ph) * k + 0.25f) * sy, sinf(th) * r * sz));
+        }
+    Mat m = tint(M(L_CONCRETE, col), rf(0.75f, 1.05f));
+    Vector3 c = Vector3Add(b, V3(0, sy * 0.4f, 0));
+    float sc = 1 / lsz(L_CONCRETE);
+    for (int j = 0; j < RING; j++)
+        for (int i = 0; i < SEG; i++) {
+            int i2 = (i + 1) % SEG;
+            Vector3 a = p[j][i], bb = p[j][i2], cc = p[j + 1][i2], d = p[j + 1][i];
+            Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(bb, a), Vector3Subtract(d, a)));
+            Vector3 mid = Vector3Scale(Vector3Add(Vector3Add(a, bb), Vector3Add(cc, d)), 0.25f);
+            if (Vector3DotProduct(n, Vector3Subtract(mid, c)) < 0) n = Vector3Negate(n);
+            quad_pn(GEO_SOLID, a, bb, cc, d, n, a.x * sc, a.y * sc, cc.x * sc + 0.3f, cc.y * sc + 0.3f, m);
+        }
+    // cap
+    Buf *bf = buf_at(GEO_SOLID, 0, 0);
+    Vector3 top = Vector3Add(b, V3(0, sy * 1.15f, 0));
+    for (int i = 0; i < SEG; i++) {
+        Vector3 a = p[RING][i], bb = p[RING][(i + 1) % SEG];
+        Vector3 n = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(bb, a), Vector3Subtract(top, a)));
+        if (n.y < 0) n = Vector3Negate(n);
+        uint32_t i0 = vert(bf, a, n, a.x * sc, a.z * sc, m), i1 = vert(bf, bb, n, bb.x * sc, bb.z * sc, m), i2 = vert(bf, top, n, top.x * sc, top.z * sc, m);
+        tri(bf, i0, i1, i2);
     }
-    if (s > 0.5f) add_box(b.x - s * 0.8f, b.y, b.z - s * 0.8f, b.x + s * 0.8f, b.y + s * 0.8f, b.z + s * 0.8f);
+    if (s > 0.5f) add_box(b.x - sx * 0.75f, b.y, b.z - sz * 0.75f, b.x + sx * 0.75f, b.y + sy, b.z + sz * 0.75f);
 }
 
 static void pole(Vector3 b, float yaw)
@@ -834,7 +854,7 @@ static void gable_roof(float x0, float z0, float x1, float z1, float h, float ri
     float o = 0.35f, cx = (x0 + x1) * 0.5f;
     Vector3 a = V3(x0 - o, h - 0.1f, z0 - o), b = V3(x0 - o, h - 0.1f, z1 + o), c = V3(cx, h + rise, z1 + o), d = V3(cx, h + rise, z0 - o);
     Vector3 e = V3(x1 + o, h - 0.1f, z0 - o), f = V3(x1 + o, h - 0.1f, z1 + o);
-    float sc = 1.0f / layer_size[m.layer];
+    float sc = 1.0f / lsz(m.layer);
     float sl = Vector3Distance(a, d);
     Vector3 n1 = Vector3Normalize(Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(d, a)));
     if (n1.y < 0) n1 = Vector3Negate(n1);
@@ -846,7 +866,7 @@ static void gable_roof(float x0, float z0, float x1, float z1, float h, float ri
         float z = s ? z1 : z0;
         Vector3 n = V3(0, 0, s ? 1.0f : -1.0f);
         Buf *bf = buf_at(GEO_SOLID, 0, 0);
-        float gs = 1.0f / layer_size[gable.layer];
+        float gs = 1.0f / lsz(gable.layer);
         uint32_t i0 = vert(bf, V3(x0, h, z), n, x0 * gs, 0, gable), i1 = vert(bf, V3(x1, h, z), n, x1 * gs, 0, gable);
         uint32_t i2 = vert(bf, V3(cx, h + rise - 0.1f, z), n, cx * gs, rise * gs, gable);
         tri(bf, i0, i1, i2);
@@ -922,7 +942,12 @@ static void canopy(float x0, float z0, float x1, float z1, float h)
         solid(x - 0.18f, 0, z - 0.18f, x + 0.18f, h, z + 0.18f, pm, pm);
     }
     sbox(x0, h, z0, x1, h + 0.7f, z1, red, M(L_METAL, 0xd0d0d0));
-    quadv(GEO_SOLID, V3(x0 + 0.2f, h - 0.01f, z1 - 0.2f), V3(x1 - x0 - 0.4f, 0, 0), V3(0, 0, -(z1 - z0 - 0.4f)), 0, 0, 1, 1, mf(M(L_PLAIN, 0xfff4e0), F_SELF, 1.8f));
+    // the underside faces down, with the strip lights in it
+    quadv(GEO_SOLID, V3(x0, h, z0), V3(x1 - x0, 0, 0), V3(0, 0, z1 - z0), 0, 0, (x1 - x0) / 2, (z1 - z0) / 2, M(L_METAL, 0xe8e8e4));
+    for (int k = 0; k < 3; k++) {
+        float z = z0 + (z1 - z0) * (k + 1) / 4;
+        quadv(GEO_SOLID, V3(x0 + 1, h - 0.03f, z - 0.15f), V3(x1 - x0 - 2, 0, 0), V3(0, 0, 0.3f), 0, 0, 1, 1, mf(M(L_PLAIN, 0xfff4e0), F_SELF, 2.5f));
+    }
     lamp_add(V3((x0 + x1) * 0.5f, h - 0.2f, (z0 + z1) * 0.5f));
     lamp_add(V3(x0 + 1, h - 0.2f, (z0 + z1) * 0.5f));
 }
@@ -1256,7 +1281,6 @@ static void build_terrain(int k)
                 if (c == 0) n = V3(0, 1, 0);
                 float d = side * (ASPH + cols[c]);
                 Mat m = ground_mat(s, d);
-                if (c <= 1) { m.layer = L_GRAVEL; m.seed = 0; }
                 vert(b, P[r][c], n, (float)((PX[r][c] - cax + ou) * us), (float)((PZ[r][c] - caz + ov) * us), m);
             }
         }
@@ -1293,6 +1317,24 @@ static void build_road_surface(int k)
             uint32_t a = base + r * 3 + c;
             tri(b, a, a + 3, a + 4); tri(b, a, a + 4, a + 1);
         }
+    // gravel shoulders, laid over the terrain
+    Mat grav = mf(M(L_GRAVEL, 0xd8d0c0), F_DECAL, 0);
+    for (int side = -1; side <= 1; side += 2) {
+        uint32_t gb = (uint32_t)b->nv;
+        for (int r = 0; r < rows; r++) {
+            double s = s0 + r * 4.0;
+            double x, z; float h, th;
+            line_at(s, &x, &z, &h, &th);
+            Vector3 l = left_of(th);
+            for (int c = 0; c < 2; c++) {
+                float d = side * (ASPH - 0.05f + c * 1.35f);
+                double X = x + l.x * d, Z = z + l.z * d;
+                float y = c == 0 ? h + 0.03f : height_sd(s, d, X, Z) + 0.02f;
+                vert(b, V3((float)(X - cax), y, (float)(Z - caz)), V3(0, 1, 0), (float)(d / 2.0), (float)((s - floor(s0 / 1280.0) * 1280.0) / 2.0), grav);
+            }
+        }
+        for (int r = 0; r + 1 < rows; r++) { uint32_t a = gb + r * 2; tri(b, a, a + 2, a + 3); tri(b, a, a + 3, a + 1); }
+    }
     // paint: a yellow centre dash, white edge lines
     Mat dash = mf(M(L_DASH, 0xffc828), F_CUT | F_DECAL, 0), edge = mf(M(L_EDGE, 0xffffff), F_CUT | F_DECAL, 0);
     for (int line = 0; line < 3; line++) {
@@ -1348,7 +1390,7 @@ static void build_roadside(int k)
         float th;
         Vector3 p = rel_at(s, pside * 11.5f, &th);
         double X = p.x + cax, Z = p.z + caz;
-        if (near_lot(X, Z, k, 2)) continue;
+        if (near_lot(X, Z, k, 14)) continue;
         pole(p, th);
         float th2;
         Vector3 q = rel_at(s + 45, pside * 11.5f, &th2);
@@ -2191,3 +2233,15 @@ void world_build(uint32_t seed)
 }
 
 void world_stream_all(void) { stream(true); }
+
+void weather_force(const char *w)
+{
+    wt_rain = wt_fog = wt_dust = wt_snow = 0;
+    if (!strcmp(w, "rain")) wt_rain = 1;
+    else if (!strcmp(w, "fog")) wt_fog = 1;
+    else if (!strcmp(w, "dust")) wt_dust = 1;
+    else if (!strcmp(w, "snow")) wt_snow = 1;
+    weather_rain = wt_rain; weather_fog = wt_fog; weather_dust = wt_dust; weather_snow = wt_snow;
+    weather_wind = wt_dust > 0 ? 0.9f : 0.5f; wt_wind = weather_wind;
+    weather_t = 1e9f;
+}

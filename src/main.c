@@ -339,7 +339,10 @@ int main(int argc, char **argv)
     uint32_t seed = 0;
     int w = 1280, h = 720;
     const char *shot_path = NULL, *script = NULL;
-    float shot_at = 5;
+    float shot_at = 5, t_hours = -1, t_km = 0;
+    const char *t_weather = NULL, *t_ui = NULL;
+    int t_quality = -1;
+    bool t_touch = false;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : "";
         if (!strcmp(a, "--seed")) { seed = (uint32_t)atoi(v); i++; }
@@ -347,7 +350,12 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--shot")) { shot_path = v; i++; }
         else if (!strcmp(a, "--at")) { shot_at = (float)atof(v); i++; }
         else if (!strcmp(a, "--play")) script = v[0] && v[0] != '-' ? (i++, v) : "drive";
-        else if (!strcmp(a, "--quality")) { quality = atoi(v); i++; }
+        else if (!strcmp(a, "--quality")) { t_quality = atoi(v); i++; }
+        else if (!strcmp(a, "--hours")) { t_hours = (float)atof(v); i++; }
+        else if (!strcmp(a, "--km")) { t_km = (float)atof(v); i++; }
+        else if (!strcmp(a, "--weather")) { t_weather = v; i++; }
+        else if (!strcmp(a, "--ui")) { t_ui = v; i++; }
+        else if (!strcmp(a, "--touch")) t_touch = true;
     }
 #if defined(PLATFORM_ANDROID)
     quality = 0;
@@ -355,6 +363,7 @@ int main(int argc, char **argv)
     quality = 1;
 #endif
     settings_load();
+    if (t_quality >= 0) quality = t_quality;
     unsigned flags = FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT;
 #if defined(PLATFORM_ANDROID)
     flags = FLAG_FULLSCREEN_MODE | FLAG_VSYNC_HINT;
@@ -376,6 +385,23 @@ int main(int argc, char **argv)
         // test mode: optionally play, then save a frame
         bool play = script != NULL;
         if (play) start_play();
+        if (t_hours >= 0) day_hours = t_hours;
+        if (t_km > 0 && sv.home_car >= 0) {
+            Car *c = &cars[sv.home_car];
+            Vector3 d;
+            Vector3 at = road_at(world_start_s() + t_km * 1000, &d);
+            at = Vector3Add(at, (Vector3){ -d.z * 1.85f, 1.0f, d.x * 1.85f });
+            c->pos = at; c->rot = QuaternionFromAxisAngle((Vector3){ 0, 1, 0 }, atan2f(d.x, d.z)); c->vel = Vector3Scale(d, 15);
+            Ped *p = &peds[PLAYER];
+            p->car = sv.home_car; p->state = PS_IN_CAR; c->driver = PLAYER; pv[PLAYER].sit = 1; p->pos = at;
+            sv.km = t_km;
+            world_stream_all();
+        }
+        if (t_weather) {
+            extern void weather_force(const char *w);
+            weather_force(t_weather);
+        }
+        if (t_touch) { extern bool touch_force; touch_force = true; }
         int frames = (int)(shot_at * 60);
         for (int f = 0; f < frames && !WindowShouldClose(); f++) {
             Input in = { 0 };
@@ -383,21 +409,28 @@ int main(int argc, char **argv)
                 if (!strcmp(script, "drive")) {
                     if (peds[PLAYER].car < 0 && f % 30 == 0 && f < 300) in.held |= BTN_ENTER, in.hit |= BTN_ENTER;
                     if (peds[PLAYER].car >= 0) {
-                        in.my = 1;
+                        // drive back to the road, then follow it on the right-hand lane
+                        Car *c = &cars[peds[PLAYER].car];
                         float s;
-                        float off = road_offset(cars[peds[PLAYER].car].pos.x, cars[peds[PLAYER].car].pos.z, &s);
-                        Vector3 d; road_at(s + 15, &d);
-                        Vector3 cf = car_fwd(&cars[peds[PLAYER].car]);
-                        float err = atan2f(d.x, d.z) - atan2f(cf.x, cf.z);
+                        float off = road_offset(c->pos.x, c->pos.z, &s);
+                        Vector3 d;
+                        Vector3 aim = road_at(s + 18, &d);
+                        aim = Vector3Add(aim, (Vector3){ d.z * -1.8f, 0, -d.x * -1.8f });
+                        Vector3 to = Vector3Subtract(aim, c->pos);
+                        Vector3 cf = car_fwd(c);
+                        float err = atan2f(to.x, to.z) - atan2f(cf.x, cf.z);
                         while (err > PI) err -= 2 * PI;
                         while (err < -PI) err += 2 * PI;
-                        in.mx = Clamp(-err * 2.5f + (off + 1.8f) * 0.08f, -1, 1);
+                        in.mx = Clamp(-err * 2.0f, -1, 1);
+                        in.my = car_kmh(c) < 70 ? 1 : 0.2f;
+                        (void)off;
                     }
                 } else if (!strcmp(script, "walk")) {
                     in.my = f > 60 ? 0.8f : 0;
                 }
                 tick(&in);
             } else { title_camera(DT); world_tick(0); }
+            if (t_touch) { Input dummy = { 0 }; hud_touch_update(&dummy, GetScreenWidth(), GetScreenHeight()); }
             if (f % 4 == 0 || f == frames - 1) {
                 BeginDrawing();
                 render_frame(GetScreenWidth(), GetScreenHeight());
@@ -408,7 +441,22 @@ int main(int argc, char **argv)
         BeginDrawing();
         render_frame(GetScreenWidth(), GetScreenHeight());
         hud_draw(GetScreenWidth(), GetScreenHeight());
+        if (t_ui) {
+            static const char *names[] = { "none", "pack", "craft", "car", "trade", "map", "pause", "settings", "mods", "title", "dead", "help", "loot" };
+            for (int k = 0; k < 13; k++) if (!strcmp(t_ui, names[k])) ui_screen = k;
+            if (ui_screen == UI_CAR) car_view = sv.home_car;
+            if (ui_screen == UI_TRADE) { for (int k = 1; k < MAX_PEDS; k++) if (peds[k].used) { trade_open(k); break; } }
+            if (ui_screen == UI_LOOT) { cont_drop(peds[PLAYER].pos, CT_CORPSE); for (int k = MAX_CONTS - 1; k >= 0; k--) if (conts[k].used && conts[k].kind == CT_CORPSE) { conts[k].searched = false; extern int loot_force(int); loot_force(k); break; } }
+            hud_draw(GetScreenWidth(), GetScreenHeight());
+            hud_draw(GetScreenWidth(), GetScreenHeight());
+        }
         rlDrawRenderBatchActive();
+        {
+            Ped *p = &peds[PLAYER];
+            fprintf(stderr, "player %.1f %.1f %.1f state %d car %d | cam %.1f %.1f %.1f -> %.1f %.1f %.1f | ground %.2f\n", p->pos.x, p->pos.y, p->pos.z, p->state, p->car,
+                    cam.position.x, cam.position.y, cam.position.z, cam.target.x, cam.target.y, cam.target.z, ground_y(p->pos.x, p->pos.z));
+            if (p->car >= 0) { Car *c = &cars[p->car]; Vector3 f = car_fwd(c); fprintf(stderr, "car %.1f %.1f %.1f fwd %.2f %.2f %.2f v %.1f fuel %.1f stalled %d\n", c->pos.x, c->pos.y, c->pos.z, f.x, f.y, f.z, car_speed(c), c->fuel, c->stalled); }
+        }
         shot(shot_path);
         EndDrawing();
         CloseWindow();

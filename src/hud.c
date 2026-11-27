@@ -177,6 +177,7 @@ static int W, H;
 static int sel_slot = -1, sel_cargo = -1, sel_recipe = -1;
 static float scroll_y[16];
 static bool touch_ui;  // touch controls are on screen
+bool touch_force;
 
 static const Color PANEL = { 20, 22, 26, 225 };
 static const Color PANEL2 = { 34, 37, 43, 235 };
@@ -369,7 +370,9 @@ static void item_tile(Rectangle r, Slot s, bool selected, bool dim)
     DrawRectangleRoundedLinesEx(r, 0.12f, 4, fmaxf(1, S), selected ? ACCENT : LINE);
     if (s.n <= 0) return;
     Item *it = &items[s.item];
-    icon(it->icon, (Vector2){ r.x + r.width / 2, r.y + r.height * 0.44f }, r.height * 0.55f, alpha(hexc(it->color), dim ? 0.4f : 1));
+    Color ic = hexc(it->color);
+    if (ic.r * 0.3f + ic.g * 0.59f + ic.b * 0.11f < 110) ic = mixc(ic, WHITE, 0.45f);   // dark things stay readable
+    icon(it->icon, (Vector2){ r.x + r.width / 2, r.y + r.height * 0.44f }, r.height * 0.55f, alpha(ic, dim ? 0.4f : 1));
     if (s.n > 1) {
         char b[16];
         snprintf(b, sizeof b, "%d", s.n);
@@ -628,9 +631,11 @@ static int touch_hit(Vector2 p)
 
 bool hud_touch_update(Input *in, int w, int h)
 {
+    static bool first = true;
+    if (first) { first = false; if (is_touch_device()) touch_ui = true; }
     W = w; H = h; S = fminf(h / 720.0f, w / 1280.0f) * (is_touch_device() ? 1.15f : 1.0f);
     int n = GetTouchPointCount();
-    if (n > 0) touch_ui = true;
+    if (n > 0 || touch_force) touch_ui = true;
     if (!touch_ui) return false;
     Ped *p = &peds[PLAYER];
     bool in_car = p->car >= 0 && p->state == PS_IN_CAR;

@@ -393,6 +393,7 @@ static void board(int i)
         if (c->key) { world_set_flag(world_key(c->key >> 12, 4, c->key & 255)); c->key = 0; }
         c->owned = true;
         if (sv.home_car != ci) { sv.home_car = ci; }
+        if ((day_hours < 6.2f || day_hours > 19.2f) && !c->lights) c->lights = true;
         if (c->stalled) hud_msg(c->fuel <= 0 ? "Out of fuel" : c->battery <= 0 ? "Battery is dead" : "The engine won't turn over", 2.5f);
     }
     sfx(S_DOOR, p->pos, 0.6f, 1);

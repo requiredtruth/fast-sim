@@ -164,6 +164,14 @@ static void p_stucco(float u, float v, int ix, int iy, float *c)
     RGB(g, g * 0.97f, g * 0.9f);
 }
 
+static void p_snow(float u, float v, int ix, int iy, float *c)
+{
+    float n = tn(u, v, 4, 4, .3f, .6f), m = tn(u, v, 1, 1, .1f, .2f), g = hf(ix, iy, 61);
+    float k = 0.86f + 0.08f * n + 0.05f * (m - 0.5f) + 0.04f * (g - 0.5f);
+    if (hf(ix >> 1, iy >> 1, 62) > 0.992f) k += 0.08f;
+    RGB(k * 0.97f, k * 0.98f, k);
+}
+
 static void p_grass(float u, float v, int ix, int iy, float *c)
 {
     float n = tn(u, v, 4, 4, 0, 0), m = tn(u, v, 2, 2, .5f, .5f), h = hf(ix, iy, 16), h2 = hf(ix >> 2, iy >> 1, 19);
@@ -592,12 +600,12 @@ typedef struct { int layer; Paint fn; float size_m; int cx, cy; float tw, th; } 
 static const LayerDef defs[] = {
     { L_DETAIL, p_detail }, { L_ASPHALT, p_asphalt }, { L_SIDEWALK, p_sidewalk }, { L_CURB, p_curb },
     { L_CONCRETE, p_concrete }, { L_BRICK, p_brick }, { L_STUCCO, p_stucco },
-    { L_GRASS, p_grass }, { L_SAND, p_sand }, { L_GRAVEL, p_gravel }, { L_SHINGLE, p_shingle },
+    { L_GRASS, p_grass }, { L_SAND, p_sand }, { L_GRAVEL, p_gravel }, { L_TILE, p_tile }, { L_SHINGLE, p_shingle },
     { L_WOOD, p_wood }, { L_METAL, p_metal }, { L_PLAIN, p_plain }, 
     { L_WIN_STUCCO, p_win_stucco }, { L_WIN_BRICK, p_win_brick }, { L_STOREFRONT, p_storefront }, { L_WIN_PLAIN, p_win_plain },
     { L_DOOR, p_door }, { L_GARAGE, p_garage }, { L_ROLLER, p_roller }, { L_AWNING, p_awning },
     { L_CHAIN, p_chain }, { L_FENCE, p_fence }, { L_LEAF, p_leaf }, { L_BARK, p_bark },
-    { L_DASH, p_dash }, { L_YELLOW, p_yellow }, { L_EDGE, p_edge }, 
+    { L_DASH, p_dash }, { L_YELLOW, p_yellow }, { L_EDGE, p_edge }, { L_SNOW, p_snow },
 };
 #define NDEFS ((int)(sizeof defs / sizeof defs[0]))
 
@@ -607,7 +615,7 @@ float layer_size[L_COUNT] = {
     [L_BRICK] = 1, [L_STUCCO] = 3, [L_GRASS] = 4, [L_SAND] = 6, [L_GRAVEL] = 2, [L_TILE] = 1, [L_SHINGLE] = 1,
     [L_WOOD] = 2, [L_METAL] = 2, [L_CONTAINER] = 2, [L_PLAIN] = 1, [L_QUAY] = 5,
     [L_CHAIN] = 1, [L_FENCE] = 2, [L_BARK] = 1, [L_PALMBARK] = 1, [L_DASH] = 9, [L_YELLOW] = 4, [L_EDGE] = 4,
-    [L_ZEBRA] = 1, [L_PARKING] = 6, [L_SOLAR] = 1.6f,
+    [L_ZEBRA] = 1, [L_PARKING] = 6, [L_SOLAR] = 1.6f, [L_SNOW] = 5, [L_AWNING] = 2, [L_DOOR] = 1, [L_GARAGE] = 3, [L_ROLLER] = 3,
 };
 static float tile_w[L_COUNT], tile_h[L_COUNT];
 

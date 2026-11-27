@@ -63,7 +63,6 @@ static void foot_cam(const Input *in, float dt, Vector3 *pos, Vector3 *tgt, floa
     if (!started) clip_d = cd;
     *pos = Vector3Add(pivot_s, Vector3Scale(ray, clip_d));
     float floor_y = ground_y(pos->x, pos->z);
-    if (floor_y < -1) floor_y = 0;
     pos->y = fmaxf(pos->y, floor_y + 0.3f);
     *tgt = Vector3Add(*pos, Vector3Scale(dir, 20));
     *fov = Lerp(62, 46, aim_k) + (p->state == PS_IDLE && v->speed > 5 ? 4 : 0);
@@ -106,7 +105,6 @@ static void car_cam(const Input *in, float dt, Vector3 *pos, Vector3 *tgt, float
     float cd = clear_dist(centre, Vector3Scale(dir, -1), dist);
     *pos = Vector3Add(centre, Vector3Scale(dir, -cd));
     float floor_y = ground_y(pos->x, pos->z);
-    if (floor_y < -1) floor_y = 0;
     pos->y = fmaxf(pos->y, floor_y + 0.35f);
     *tgt = Vector3Add(centre, Vector3Scale((Vector3){ dir.x, 0, dir.z }, 2.0f));
     *fov = 60 + Clamp(fabsf(spd) / 45, 0, 1) * 16;

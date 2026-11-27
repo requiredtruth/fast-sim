@@ -282,7 +282,7 @@ static const char *FS_WORLD = GLSL(
         float dt = texture(uTex, vec3(duv * 0.6, float(L_DETAIL))).r;
         alb *= mix(1.0, dt * 2.0, 0.3 * (1.0 - smoothstep(25.0, 110.0, dist)));
 
-        if (ly == L_GRASS || ly == L_SAND || ly == L_ASPHALT || ly == L_SIDEWALK || ly == L_QUAY) {
+        if (ly == L_GRASS || ly == L_SAND || ly == L_ASPHALT || ly == L_SIDEWALK || ly == L_QUAY || ly == L_SNOW) {
             float mv = vnoise(vPos.xz * 0.045) * 0.6 + vnoise(vPos.xz * 0.17 + 7.0) * 0.4;
             alb *= mix(0.8, 1.18, mv);
             if (ly == L_GRASS) alb = mix(alb, alb * vec3(1.3, 1.0, 0.55), smoothstep(0.55, 0.8, vnoise(vPos.xz * 0.02 + 3.0)));
@@ -291,7 +291,7 @@ static const char *FS_WORLD = GLSL(
         float ndl = leaf ? pow(dot(N, uLDir) * 0.5 + 0.5, 2.0) : max(dot(N, uLDir), 0.0);
         float sh = ndl > 0.0 ? shadow_at(vPos, N, ndl) : 1.0;
         vec3 amb = mix(uGnd, uSky, N.y * 0.5 + 0.5);
-        float ao = N.y > 0.7 ? 1.0 : mix(0.62, 1.0, smoothstep(0.0, 3.0, vPos.y));
+        float ao = N.y > 0.7 ? 1.0 : 0.86;
         if (leaf) ao = mix(0.5, 1.0, clamp(vSeed, 0.0, 1.0));
         vec3 emis = vec3(0.0);
         vec3 direct = uLCol * ndl * sh;
@@ -317,7 +317,7 @@ static const char *FS_WORLD = GLSL(
         }
         vec3 col;
         if ((fl & 64) != 0) {
-            col = alb * mix(vec3(0.5, 0.48, 0.46), vec3(0.34, 0.24, 0.14), uNight) * mix(0.7, 1.0, smoothstep(0.0, 2.5, vPos.y));
+            col = alb * mix(vec3(0.5, 0.48, 0.46), vec3(0.34, 0.24, 0.14), uNight) * 0.9;
             col += dyn_lights(vPos, N) * alb * 0.3;
         } else {
             col = alb * (direct + amb * ao + dyn_lights(vPos, N)) + emis;
@@ -468,7 +468,7 @@ static const char *FS_CAR = GLSL(
         float ndl = max(dot(N, uLDir), 0.0);
         float sh = ndl > 0.0 ? shadow_at(vPos, N, ndl) : 1.0;
         vec3 amb = mix(uGnd, uSky, N.y * 0.5 + 0.5);
-        vec3 col = alb * (uLCol * ndl * sh + amb * mix(0.75, 1.0, smoothstep(0.1, 0.8, vPos.y)) + dyn_lights(vPos, N)) + emis;
+        vec3 col = alb * (uLCol * ndl * sh + amb * 0.92 + dyn_lights(vPos, N)) + emis;
         vec3 R = reflect(-V, N);
         col += sky_grad(R) * refl * (R.y < 0.0 ? 0.5 : 1.0);
         vec3 H = normalize(uLDir + V);
@@ -817,14 +817,26 @@ void render_init(void)
     if (quality == 0) { SH_SIZE = 1536; MSAA = 2; render_scale = 0.72f; }
     else if (quality == 1) { SH_SIZE = 2048; MSAA = 4; render_scale = 0.85f; }
     int n = snprintf(prelude, sizeof prelude,
-        "%sconst int L_PALM = %d, L_LEAF = %d, L_GRASS = %d, L_DETAIL = %d, L_SAND = %d, L_ASPHALT = %d, L_SIDEWALK = %d, L_QUAY = %d;\n", ver,
-        L_PALM, L_LEAF, L_GRASS, L_DETAIL, L_SAND, L_ASPHALT, L_SIDEWALK, L_QUAY);
+        "%sconst int L_PALM = %d, L_LEAF = %d, L_GRASS = %d, L_DETAIL = %d, L_SAND = %d, L_ASPHALT = %d, L_SIDEWALK = %d, L_QUAY = %d, L_SNOW = %d;\n", ver,
+        L_PALM, L_LEAF, L_GRASS, L_DETAIL, L_SAND, L_ASPHALT, L_SIDEWALK, L_QUAY, L_SNOW);
     (void)n;
 
     static char fs_world[16384], fs_glass[4096], fs_water[8192];
+    static char dbg_body[16384];
+    const char *world_body = FS_WORLD;
+    if (getenv("DBG_WORLD")) {
+        // swap the last line for a debug view: 1 normal, 2 ambient, 3 albedo, 4 col before fog
+        snprintf(dbg_body, sizeof dbg_body, "%s", FS_WORLD);
+        char *e = strstr(dbg_body, "oCol = vec4(apply_fog(col, vPos), ca);");
+        const char *rep[6] = { "oCol = vec4(N * 0.5 + 0.5, 1.0);    ", "oCol = vec4(amb, 1.0);              ", "oCol = vec4(alb, 1.0);              ", "oCol = vec4(col, 1.0);              ",
+                               "oCol=vec4(vLayer/64.0,vCol.r,t.r,1);", "oCol=vec4(vCol.g,vCol.b,t.g,1.0);   " };
+        int k = atoi(getenv("DBG_WORLD")) - 1;
+        if (e && k >= 0 && k < 6) { memcpy(e, rep[k], strlen(rep[k])); memset(e + strlen(rep[k]), ' ', strlen("oCol = vec4(apply_fog(col, vPos), ca);") - strlen(rep[k])); }
+        world_body = dbg_body;
+    }
     char common[8192];
     snprintf(common, sizeof common, "%s", FS_COMMON);
-    snprintf(fs_world, sizeof fs_world, "%s%s%s", common, FS_WORLD_FIX, FS_WORLD);
+    snprintf(fs_world, sizeof fs_world, "%s%s%s", common, FS_WORLD_FIX, world_body);
     snprintf(fs_glass, sizeof fs_glass, "%s%s", common, FS_GLASS);
     snprintf(fs_water, sizeof fs_water, "%s%s", common, FS_WATER);
     static char fs_car[12288], fs_prop[8192], fs_char[8192], fs_sky[12288];
