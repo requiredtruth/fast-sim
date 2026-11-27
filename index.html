@@ -80,9 +80,10 @@ function stop(segment) {
   const z = segment*175+82, x = road(z)+(cell(segment*31)<.5?-1:1)*(16+cell(segment*41)*14);
   return {id:'stop:'+segment,type,x,z,size:type==='shed'?7:4,segment};
 }
+const nearbyCamp = () => Object.values(state.camps).find(camp=>distance(camp)<9);
 function nearby() {
   const segment=Math.floor(state.z/175);
-  const candidates=[stop(segment-1),stop(segment),stop(segment+1),...Object.values(state.camps),
+  const candidates=[...Object.values(state.camps),stop(segment-1),stop(segment),stop(segment+1),
     ...Object.entries(state.parked).map(([id,car])=>({id,type:'parked',x:car.x,z:car.z,car}))];
   if(!state.driving) candidates.push({type:'car',...state.car});
   const obj=candidates.filter(obj=>distance(obj)<9).sort((a,b)=>distance(a)-distance(b))[0];
@@ -200,7 +201,7 @@ function renderMenu(){
         button('Store',()=>move(bag,car.cargo,spec.cap),!bag[id]),button('Take',()=>move(car.cargo,bag,16),!car.cargo[id]));
     }
   }else if(selectedTab==='Craft'){
-    const atCamp=nearby()?.type==='camp'&&!state.driving;
+    const atCamp=nearbyCamp()&&!state.driving;
     for(const [id,ingredients] of Object.entries(recipes)){
       const complete=Object.entries(ingredients).every(([key,n])=>(bag[key]||0)>=n);
       row(def(id)[0]+' · '+Object.entries(ingredients).map(([key,n])=>n+' '+def(key)[0]).join(', ')+(id==='meal'?' · campfire':''),
@@ -212,8 +213,8 @@ function renderMenu(){
         },!complete||(id==='meal'&&!atCamp)));
     }
   }else if(selectedTab==='Camp'){
-    const camp=nearby();
-    if(camp?.type!=='camp'||state.driving){
+    const camp=nearbyCamp();
+    if(!camp||state.driving){
       if(!state.driving&&car.type==='camper'&&distance(car)<8){
         row('Camper bunk · sleep until 05:00',button('Sleep',sleep));
       }
