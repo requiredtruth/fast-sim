@@ -1,3 +1,4 @@
+#include "estate.h"
 // Long Road: the frame loop, input, starting and ending trips.
 #include "game.h"
 #include "ped.h"
@@ -44,8 +45,8 @@ void render_set_quality(int q);
 void settings_save(void)
 {
     char b[256];
-    snprintf(b, sizeof b, "quality=%d\ntilt_steer=%d\ntilt_walk=%d\ntilt_invert=%d\ntilt_sens=%.2f\nvolume=%.2f\ndifficulty=%d\n",
-             quality, tilt_steer, tilt_walk, tilt_invert, tilt_sens, audio_volume, difficulty);
+    snprintf(b, sizeof b, "quality=%d\ntilt_steer=%d\ntilt_walk=%d\ntilt_invert=%d\ntilt_sens=%.2f\nvolume=%.2f\ndifficulty=%d\nambience=%d\nvehicle_audio=%d\nfemale_avatar=%d\n",
+             quality, tilt_steer, tilt_walk, tilt_invert, tilt_sens, audio_volume, difficulty, ambience_enabled, vehicle_audio_enabled, female_avatar);
     plat_put("settings", b);
 }
 
@@ -63,6 +64,9 @@ static void settings_load(void)
     if ((p = strstr(t, "tilt_sens=")) && sscanf(p, "tilt_sens=%f", &s) == 1) tilt_sens = s;
     if ((p = strstr(t, "volume=")) && sscanf(p, "volume=%f", &v) == 1) audio_volume = v;
     if ((p = strstr(t, "difficulty=")) && sscanf(p, "difficulty=%d", &q) == 1 && q >= 0 && q < DIFF_COUNT) difficulty = q;
+    if ((p = strstr(t, "\nambience=")) && sscanf(p, "\nambience=%d", &q) == 1) ambience_enabled = q != 0;
+    if ((p = strstr(t, "\nvehicle_audio=")) && sscanf(p, "\nvehicle_audio=%d", &q) == 1) vehicle_audio_enabled = q != 0;
+    if ((p = strstr(t, "\nfemale_avatar=")) && sscanf(p, "\nfemale_avatar=%d", &q) == 1) female_avatar = q != 0;
     free(t);
 }
 
@@ -178,6 +182,7 @@ void new_game(uint32_t seed)
     Vector3 at = road_at(world_start_s(), &dir);
     peds[PLAYER].pos = at;
     player_init();
+    wardrobe_apply();
     world_stream_all();
     int gas = -1;
     for (int i = 0; i < MAX_STOPS; i++) if (stops[i].used && stops[i].kind == STOP_GAS && stops[i].km < 0.6f) gas = i;

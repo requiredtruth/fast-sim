@@ -119,6 +119,18 @@ static const char *BASE =
 "item id=metal_sheet name=\"Aluminum sheet\" kind=mat weight=0.78 stack=8 price=9 icon=plank color=b5bbc1 loot=toolbox:3,crate:3,trunk:1 desc=\"Sheet stock for repairs.\"\n"
 "item id=postcards name=\"Old postcards\" kind=trade weight=0.05 stack=20 price=7 icon=box color=cf977e loot=desk:4,bed:3,bag:1 desc=\"Roadside souvenirs worth a few dollars.\"\n"
 "item id=brass_badge name=\"Brass badge\" kind=trade weight=0.10 stack=5 price=27 icon=coin color=bd9854 loot=desk:1,locker:2,crate:1 desc=\"Collectors pay for these.\"\n"
+"item id=floor_panel name=\"Timber floor panel\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=a67848 loot=crate:1\n"
+"item id=wall_panel name=\"Timber wall panel\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=a67848 loot=crate:1\n"
+"item id=door_frame name=\"Timber doorway\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=986030 loot=crate:1\n"
+"item id=wood_door name=\"Timber door\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=805020 loot=crate:1\n"
+"item id=roof_panel name=\"Timber roof panel\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=a06848 loot=crate:1\n"
+"item id=soil_plot name=\"Soil plot kit\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=65482f loot=crate:2\n"
+"item id=bean_seed name=\"Bean seed packet\" kind=mat weight=0.7 stack=8 price=8 icon=box color=5e8736 loot=crate:3,shelf:2\n"
+"item id=leather_jacket name=\"Leather jacket\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=583122 loot=locker:3\n"
+"item id=rose_dress name=\"Rose dress\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=da4a85 loot=locker:3\n"
+"item id=blue_dress name=\"Blue dress\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=4284cd loot=locker:3\n"
+"item id=cowboy_hat name=\"Cowboy hat\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=936536 loot=locker:3,desk:1\n"
+"item id=garden_beans name=\"Garden beans\" kind=food eat=16 water=5 weight=0.2 stack=12 price=5 icon=leaf color=548738\n"
 "# ---- crafting\n"
 "recipe id=bandages out=bandage:2 in=rags:2\n"
 "recipe id=boil_water out=water:1 in=dirty_water:1 fire=1\n"
@@ -138,8 +150,14 @@ static const char *BASE =
 "recipe id=build_tent out=tent:1 in=canvas:2,rope:1,metal_sheet:1\n"
 "recipe id=make_lead out=spark_lead:1 in=wiring:2,rubber_strip:1 tool=toolkit\n"
 "recipe id=sheet_scrap out=scrap:3 in=metal_sheet:1 tool=toolkit\n"
+"recipe id=floor_panel out=floor_panel:1 in=wood:2\n"
+"recipe id=wall_panel out=wall_panel:1 in=wood:2\n"
+"recipe id=door_frame out=door_frame:1 in=wood:2\n"
+"recipe id=wood_door out=wood_door:1 in=wood:2\n"
+"recipe id=roof_panel out=roof_panel:1 in=wood:2\n"
+"recipe id=soil_plot out=soil_plot:1 in=wood:1,rags:1\n"
 "# ---- starting kit\n"
-"start item=water:2 item=beans:2 item=bandage:2 item=lighter:1 item=gas_empty:1 item=siphon:1 item=jack:1 item=cash:30 item=pipe:1 item=rags:2\n";
+"start item=water:2 item=beans:2 item=bandage:2 item=lighter:1 item=gas_empty:1 item=siphon:1 item=jack:1 item=cash:30 item=pipe:1 item=rags:2 item=soil_plot:1 item=bean_seed:2 item=wood:6\n";
 
 // the example a player sees in the mods folder, disabled until they turn it on
 const char *EXAMPLE_MOD =

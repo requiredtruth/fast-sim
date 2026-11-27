@@ -1,3 +1,4 @@
+#include "estate.h"
 // every model in the game is built here from code: cars, people, hair, guns, props, and the
 // animation clips. nothing is loaded from disk. units: metres, y up, +z forward, +x is the model's left.
 #include <math.h>
@@ -1250,9 +1251,27 @@ static void build_clips(void)
     make_clip(A_CROUCH_WALK, 28, true, c_crouch_walk);
 }
 
+static void sandbox_meshes(void)
+{
+    MB m={0};
+    mb_box(&m,V3(-.5f,-.5f,-.5f),V3(.5f,.5f,.5f),rgba(0xffffff,0));
+    estate_cube=mb_upload(&m);
+    m=(MB){.skin=true}; skin_to(B_CHEST,B_SP2,.25f);
+    mb_ellipsoid(&m,V3(0,1.30f,0),V3(.198f,.226f,.118f),16,10,reg(R_SHIRT));
+    wardrobe_mesh[0]=mb_upload(&m);
+    m=(MB){.skin=true}; skin_to(B_PELVIS,B_PELVIS,0);
+    mb_cyl(&m,V3(0,.63f,0),V3(0,1.09f,0),.245f,.142f,18,reg(R_SHIRT),reg(R_SHIRT),true);
+    wardrobe_mesh[1]=mb_upload(&m);
+    m=(MB){.skin=true}; skin_to(B_HEAD,B_HEAD,0);
+    mb_cyl(&m,V3(0,1.78f,0),V3(0,1.81f,0),.195f,.185f,18,reg(R_HAIR),reg(R_HAIR),true);
+    mb_cyl(&m,V3(0,1.8f,0),V3(0,1.92f,0),.107f,.081f,12,reg(R_HAIR),reg(R_HAIR),true);
+    wardrobe_mesh[2]=mb_upload(&m);
+}
+
 void assets_load(void)
 {
     build_skeleton();
+    sandbox_meshes();
     build_cars();
     body_mesh[BODY_MALE] = body(false);
     body_mesh[BODY_FEMALE] = body(true);

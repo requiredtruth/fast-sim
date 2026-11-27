@@ -1,3 +1,4 @@
+#include "estate.h"
 #include <math.h>
 #include <string.h>
 #include "ped.h"
@@ -476,6 +477,7 @@ void peds_draw(int pass)
         if (p->state == PS_IN_CAR && p->car >= 0 && cars[p->car].used) v->xf = seat_xf(p, v);
         draw_char(body_mesh[p->body], v->xf, v->bones, p->pal);
         if (p->hair >= 0) draw_char(hair_mesh[p->hair], v->xf, v->bones, p->pal);
+        if (i == PLAYER) wardrobe_draw(v->xf,v->bones);
         if (p->weapon != W_FIST && p->state != PS_IN_CAR && gun_mesh[p->weapon].vaoId) {
             Matrix hand = MatrixMultiply(MatrixInvert(skel.inv_bind[skel.hand_r]), v->bones[skel.hand_r]);
             draw_mesh(gun_mesh[p->weapon], MatrixMultiply(MatrixMultiply(grip, hand), v->xf), WHITE, MAT_PROP);

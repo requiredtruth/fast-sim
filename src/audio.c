@@ -1,3 +1,4 @@
+#include "estate.h"
 // software mixer: one-shot voices with 3d position, plus synthesized engines, sirens, tyres, horns, fire
 // and a city bed. everything is rendered in 64 frame blocks at 44100 Hz stereo float.
 #include <math.h>
@@ -549,7 +550,7 @@ static void make_block(float *dry)
 {
     float wet[BLK] = { 0 }, m[BLK];
     memset(dry, 0, sizeof(float) * BLK * 2);
-    ambience_block(dry);
+    if (ambience_enabled) ambience_block(dry);
     voices_block(dry, wet);
     for (int i = 0; i < MAX_CARS; i++) {
         if (!idle(&eng[i].c)) { engine_block(&eng[i], m); put(&eng[i].c, m, dry); }
@@ -702,13 +703,14 @@ static void aim_cars(void)
     if (pc >= 0 && !have) sel[n < NENG ? n++ : NENG - 1] = pc;
     for (int k = 0; k < n; k++) {
         Car *c = &cars[sel[k]];
+        if (!vehicle_audio_enabled || c->stalled || c->health <= 0 || c->fuel <= 0) continue;
         Engine *e = &eng[sel[k]];
         e->cyl = cylinders[(int)Clamp(c->model, 0, CAR_MODELS - 1)];
         e->rpm_t = Clamp(c->rpm, 0, 1);
         e->load_t = Clamp(fabsf(c->throttle), 0, 1);
         e->dop_t = doppler(c->pos, c->vel);
         if (e->dop == 0) e->dop = e->dop_t;
-        if (sel[k] == pc) { aim_inside(&e->c, 0.6f, 5200); e->dop_t = 1; }
+        if (sel[k] == pc) { aim_inside(&e->c, 0.23f, 1550); e->dop_t = 1; }
         else aim(&e->c, c->pos, 4, 90, 0.7f);
     }
 
@@ -726,6 +728,7 @@ static void aim_cars(void)
     n = nearest(is_skidding, 4, sel);
     for (int k = 0; k < n; k++) {
         Car *c = &cars[sel[k]];
+        if (!vehicle_audio_enabled || car_kmh(c) < 11) continue;
         Skid *s = &skid[sel[k]];
         s->target = Clamp((c->skid - SKID_START) / (1 - SKID_START), 0, 1);
         aim(&s->c, c->pos, 3, 80, 0.68f * s->target * s->target);

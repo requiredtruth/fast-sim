@@ -1,3 +1,4 @@
+#include "estate.h"
 // staying alive: the pack and the trunk, food water sleep and warmth, searching, using things,
 // crafting, trading, camping, fishing, and saving the trip.
 #include <math.h>
@@ -150,6 +151,7 @@ static bool near_fire(void) { return sv.camp_fire > 0 && dist_xz(sv.camp_p, peds
 bool item_use(int it)
 {
     if (it < 0 || it >= nitems || pack_count(it) <= 0) return false;
+    if (wardrobe_item(it)) return wardrobe_equip(it);
     Item *t = &items[it];
     Ped *p = &peds[PLAYER];
     bool used = true, consume = true;
@@ -509,6 +511,11 @@ static void placement_confirm(void)
     Vector3 p;
     if (slot->n <= 0) { placement_cancel(); return; }
     if (!placement_target(&p)) { hud_msg("Aim at dry ground or a flat surface in reach", 2); return; }
+    if (estate_piece(slot->item)) {
+        if (estate_place(slot->item,p,place_yaw)) { slot->n--; placement_cancel(); }
+        else hud_msg("Part will not fit here",2);
+        return;
+    }
     int ci = ground_drop(p, CT_BAG);
     if (ci < 0) { hud_msg("No space for another placed item", 2); return; }
     Cont *c = &conts[ci];
@@ -725,6 +732,8 @@ const char *survive_prompt(void)
     Ped *p = &peds[PLAYER];
     prompt_kind = PK_NONE;
     if (!p->used || p->state == PS_DEAD || p->state == PS_RAGDOLL || search_ci >= 0) return NULL;
+    const char *edit = estate_prompt();
+    if (edit) return edit;
     if (p->car >= 0) {
         if (fabsf(car_speed(&cars[p->car])) < 1) { prompt_kind = PK_CAR; prompt_ci = p->car; return "Car and trunk"; }
         return NULL;
@@ -735,6 +744,7 @@ const char *survive_prompt(void)
     if (ci >= 0) {
         Cont *c = &conts[ci];
         prompt_ci = ci;
+        if (c->placed) { prompt_kind = PK_LOOT; return "Pick up item"; }
         switch (c->kind) {
         case CT_PUMP: prompt_kind = PK_PUMP; return "Hand-pump the tank";
         case CT_WELL: prompt_kind = PK_WELL; return "Draw water";
@@ -791,6 +801,7 @@ bool survive_search(int ci)
 void survive_interact(void)
 {
     if (placement_active()) { placement_confirm(); return; }
+    if (estate_use(false)) return;
     Ped *p = &peds[PLAYER];
     survive_prompt();
     switch (prompt_kind) {
@@ -801,7 +812,12 @@ void survive_interact(void)
         ped_play(PLAYER, A_INTERACT);
         sfx(S_DOOR, conts[prompt_ci].p, 0.5f, 0.9f);
         break;
-    case PK_LOOT: loot_open(prompt_ci); break;
+    case PK_LOOT: {
+        bool placed = conts[prompt_ci].placed;
+        loot_open(prompt_ci);
+        if (placed) { loot_take_all(); ui_screen = UI_NONE; loot_ci = -1; }
+        break;
+    }
     case PK_PUMP: {
         Cont *c = &conts[prompt_ci];
         uint32_t k = c->key ^ 0x5a5a;
@@ -864,6 +880,7 @@ void survive_tick(float dt)
     Ped *p = &peds[PLAYER];
     if (!p->used || mode == MODE_DEAD) return;
     sync_weapons();
+    wardrobe_apply();
     if (sleep_fade > 0) sleep_fade -= dt;
     float h = dt * HOURS;
     bool in_car = p->car >= 0 && cars[p->car].used;
@@ -981,6 +998,7 @@ static void item_draw(int item, Vector3 pos, float angle, bool preview)
 
 void survive_draw(int pass)
 {
+    estate_draw(pass);
     Vector3 target;
     if (pass == PASS_MAIN && placement_target(&target)) item_draw(pack[place_slot].item, target, place_yaw, true);
     for (int i = 0; i < MAX_CONTS; i++) {
@@ -1040,6 +1058,7 @@ void survive_reset(uint32_t seed)
     camp_tent = false;
     drop_key = DROP_BASE;
     placement_cancel();
+    estate_reset();
     (void)seed;
 }
 
@@ -1104,6 +1123,7 @@ bool game_save(void)
         w += snprintf(w, end - w, "drop=%.3f %.3f %.3f %.3f ", c->p.x + world_ox, (double)c->p.y, c->p.z + world_oz, c->placed ? c->yaw : -100.0f);
         put_inv(&w, end, "items", cont_items[i], 8);
     }
+    if (!estate_save(&w,end)) return false;
     uint32_t *fl;
     int nf = world_flags_get(&fl);
     if (end - w < 16 || (size_t)nf > (size_t)(end - w - 16) / 9) return false;
@@ -1251,6 +1271,7 @@ bool game_load(void)
     else memset(pack, 0, sizeof pack);
     if ((q = strstr(text, "\ncargo="))) { char line[4096]; line[0] = 0; sscanf(q, "\ncargo=%4095[^\n]", line); get_inv(line, cargo, CARGO_SLOTS); }
     else memset(cargo, 0, sizeof cargo);
+    estate_load(text);
     q = text;
     while ((q = strstr(q, "\ndrop="))) {
         double x, z;

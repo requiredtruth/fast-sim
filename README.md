@@ -1,8 +1,10 @@
 # Long Road
 
+> **Feature retention rule. Existing features must never be removed, disabled, or hidden without the repository owner's express permission. Backward compatibility is a separate decision for the stable version.**
+
 A road survival game. You drive one endless highway through desert, plains, forest, badlands and snowy mountains. Find fuel, food and parts at the stops along the way, keep your car running, and see how far you get.
 
-Long Road is a fork of [Out on Parole](https://github.com/shaydex-codes/outonparole), a small C and raylib open-world game. It keeps that game's renderer, car physics, characters, ragdolls, weapons, effects and sound mixer. The city, the police and the missions are replaced by the highway and the survival game. Every car, person, building, plant, gun and animation is built from code at startup, so the game has no model or texture files.
+Long Road is a fork of [Out on Parole](https://github.com/shaydex-codes/outonparole), a small C and raylib open-world game. It keeps that game's renderer, car physics, characters, ragdolls, weapons, effects and sound mixer. Long Road adds highway survival and includes the fork’s original coastal city as Metro Grid. Every car, person, building, plant, gun and animation is built from code at startup, so the game has no model or texture files.
 
 [Download the latest release](https://github.com/requiredtruth/fast-sim/releases/latest)
 
@@ -13,6 +15,16 @@ Long Road is a fork of [Out on Parole](https://github.com/shaydex-codes/outonpar
 | Windows x64 | `LongRoad-windows-x64.zip` | Unzip, run `LongRoad.exe`. |
 | Linux x64 | `LongRoad-linux-x64.tar.gz` | Extract, run `./LongRoad/longroad`. Needs X11 and OpenGL 3.3. |
 
+
+## Building, gardening, and outfits
+
+Craft timber parts or a soil plot, then use **Pack → Place One in World**. Rotate and aim at the ground before placing a part. Fit a door into a crafted doorway. Aim at a door and use **Use** to swing it. Aim at a placed part and press **X** or tap **Reclaim** to recover it. Use **Z** or **Paint** to cycle timber finishes.
+
+Place a soil plot, aim at it and use **Use** to plant a bean seed, water it with a bottle, and later harvest. Water the plant again for another crop.
+
+Choose **Male** or **Female** in Settings. Select a dress, leather jacket, or cowboy hat in the pack to equip it. Activating that same garment again takes it off.
+
+**Ambience** and **Engine and Tires** are independent settings. See [To Do.md](To%20Do.md) for the editable-building and sandbox roadmap.
 
 ## Choose a world
 

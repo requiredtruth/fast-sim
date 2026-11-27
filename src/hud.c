@@ -1,3 +1,4 @@
+#include "estate.h"
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -857,9 +858,9 @@ static void pack_screen(void)
     details(d, it, sel_slot >= 0 ? pack[sel_slot].n : 0);
     if (it >= 0) {
         float bw = (d.width - 40 * S) / 3, by = d.y + d.height - 56 * S;
-        bool usable = items[it].effect != E_NONE && items[it].effect != E_WEAPON;
+        bool usable = wardrobe_item(it) || (items[it].effect != E_NONE && items[it].effect != E_WEAPON);
         if (!strcmp(items[it].id, "wood") || !strcmp(items[it].id, "rod")) usable = true;
-        if (button(rect(d.x + 10 * S, by, bw, 44 * S), items[it].effect == E_LIGHT && items[it].value <= 1 ? (sv.torch_on ? "LIGHT OFF" : "LIGHT ON") : "USE", usable))
+        if (button(rect(d.x + 10 * S, by, bw, 44 * S), items[it].effect == E_LIGHT && items[it].value <= 1 ? (sv.torch_on ? "LIGHT OFF" : "LIGHT ON") : wardrobe_item(it) ? "EQUIP/REMOVE" : "USE", usable))
             item_use(it);
         if (button(rect(d.x + 20 * S + bw, by, bw, 44 * S), "DROP", true)) pack_drop(sel_slot);
         if (button(rect(d.x + 10 * S, by - 50 * S, d.width - 20 * S, 44 * S), "PLACE ONE IN WORLD", peds[PLAYER].car < 0))
@@ -1171,7 +1172,16 @@ static void settings_screen(void)
         difficulty = (difficulty + 1) % DIFF_COUNT;
         settings_save();
     }
-    y2 += 58 * S;
+    y2 += 55 * S;
+    if (toggle_row(x2,y2,w,"AMBIENCE",ambience_enabled)) { ambience_enabled=!ambience_enabled; settings_save(); }
+    y2 += 48 * S;
+    if (toggle_row(x2,y2,w,"ENGINE AND TIRES",vehicle_audio_enabled)) { vehicle_audio_enabled=!vehicle_audio_enabled; settings_save(); }
+    y2 += 48 * S;
+    text("CHARACTER",x2,y2+10*S,15*S,INK,0);
+    if (button(rect(x2+w-150*S,y2,150*S,40*S),female_avatar?"FEMALE":"MALE",true)){
+        female_avatar=!female_avatar; wardrobe_apply(); settings_save();
+    }
+    y2 += 51 * S;
 #if defined(PLATFORM_ANDROID)
     if (button(rect(x2, y2, w, 48 * S), "DOWNLOAD APK UPDATE", true))
         OpenURL("https://github.com/requiredtruth/fast-sim/releases/latest/download/LongRoad.apk");
@@ -1352,6 +1362,10 @@ void hud_input(const Input *in)
     if (mode == MODE_TITLE || mode == MODE_DEAD) return;
     if ((in->hit & BTN_PAUSE) && placement_active()) { placement_cancel(); return; }
     if (placement_active() && IsKeyPressed(KEY_Z)) placement_rotate();
+    if (!demo_active && ui_screen == UI_NONE && !placement_active()) {
+        if (IsKeyPressed(KEY_X)) estate_use(true);
+        if (IsKeyPressed(KEY_Z)) estate_paint();
+    }
     if (in->hit & BTN_PAUSE) {
         if (ui_screen == UI_NONE) ui_screen = UI_PAUSE;
         else { if (ui_screen == UI_SETTINGS) settings_save(); ui_screen = UI_NONE; loot_ci = -1; }
@@ -1387,6 +1401,12 @@ void hud_draw(int w, int h)
     if (ui_screen == UI_NONE || ui_screen == UI_PAUSE) {
         survival_panel();
         world_panel();
+        if (!demo_active && ui_screen == UI_NONE && peds[PLAYER].car < 0 && !placement_active() && estate_targeted()) {
+            if (is_touch_device()) {
+                if (button(rect(W*.5f-135*S,H-53*S,126*S,39*S),"RECLAIM",true)) estate_use(true);
+                if (button(rect(W*.5f+9*S,H-53*S,126*S,39*S),"PAINT",true)) estate_paint();
+            } else text("X RECLAIM   Z PAINT",W*.5f,H-60*S,14*S,SAND,1);
+        }
         if (placement_active()) {
             float x = W * .5f - 210 * S, y = H - 85 * S;
             text(is_touch_device() ? "AIM AT A SURFACE AND TAP USE" : "AIM AT A SURFACE   E PLACE   Z ROTATE   ESC CANCEL", W * .5f, y - 30 * S, 16 * S, SAND, 1);

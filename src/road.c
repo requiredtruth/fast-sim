@@ -1,3 +1,4 @@
+#include "estate.h"
 // the world: one endless two-lane highway through changing country. the land is streamed in
 // 128 m segments built from the seed, so the same seed always gives the same road, stops and wrecks.
 // geometry is kept relative to each segment's anchor, so the far reaches of the road stay precise.
@@ -1899,10 +1900,11 @@ static void push_visit(const Box *b, float ox, float oz, void *ud)
 
 bool world_push(Vector3 *p, float radius, float height)
 {
-    if (world_kind == WORLD_CITY) return city_push(p, radius, height);
+    bool built_hit = estate_push(p,radius,height);
+    if (world_kind == WORLD_CITY) return city_push(p,radius,height) || built_hit;
     PushQ q = { p, radius, height, false };
     for (int it = 0; it < 2; it++) boxes_near(*p, radius + 1, push_visit, &q);
-    return q.hit;
+    return q.hit || built_hit;
 }
 
 typedef struct { WBox *out; int n, max; Vector3 c; float r; } BoxQ;
@@ -1922,6 +1924,8 @@ static void obox_visit(const Box *b, float ox, float oz, void *ud)
 
 int world_obox(Vector3 c, float r, WBox *out, int max)
 {
+    int added=estate_boxes(c,r,out,max);
+    out+=added; max-=added;
     if (world_kind == WORLD_CITY) {
         BoundingBox bounds[64];
         int n = city_boxes(c, r, bounds, max < 64 ? max : 64);
@@ -1930,11 +1934,11 @@ int world_obox(Vector3 c, float r, WBox *out, int max)
             out[i] = (WBox){ Vector3Scale(Vector3Add(a, b), .5f), (b.x-a.x)*.5f, (b.z-a.z)*.5f,
                             a.y, b.y, {1,0,0}, {0,0,1} };
         }
-        return n;
+        return n+added;
     }
     BoxQ q = { out, 0, max, c, r };
     boxes_near(c, r, obox_visit, &q);
-    return q.n;
+    return q.n+added;
 }
 
 int world_boxes(Vector3 c, float r, BoundingBox *out, int max)
