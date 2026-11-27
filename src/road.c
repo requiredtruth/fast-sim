@@ -221,7 +221,18 @@ Vector3 road_at(float s, Vector3 *dir)
     return V3((float)(x - world_ox), h + 0.03f, (float)(z - world_oz));
 }
 
-bool on_road(float x, float z) { return fabsf(road_offset(x, z, NULL)) < ASPH; }
+static float cross_street_z(int k) { return k % 2 == 0 ? 112 : 16; }
+
+bool on_road(float x, float z)
+{
+    float s;
+    float d = fabsf(road_offset(x, z, &s));
+    if (d < ASPH) return true;
+    if (world_kind != WORLD_CITY) return false;
+    int k = (int)floorf(s / (float)SEG_LEN);
+    return fabsf(d - 112) < 4 ||
+           (d < 136 && fabsf(s - k * (float)SEG_LEN - cross_street_z(k)) < 4);
+}
 
 // ---------------------------------------------------------------- stops
 
@@ -1397,13 +1408,42 @@ static bool near_lot(double X, double Z, int k, float pad)
 static void build_district(int k)
 {
     // Cross streets link the highway with the parallel streets on either side.
-    float z = (k % 2 == 0) ? 112 : 16;
+    float z = cross_street_z(k);
     Mat asphalt = M(L_ASPHALT, 0x909497);
+    Mat paint = mf(M(L_PLAIN, 0xe2dcc3), F_DECAL, 0);
+    Mat curb_mat = M(L_CURB, 0xb8b4ae);
     lot_surface(-136, z - 4, -ASPH, z + 4, asphalt);
     lot_surface(ASPH, z - 4, 136, z + 4, asphalt);
     for (int side = -1; side <= 1; side += 2) {
         float x = side * 112.0f;
         lot_surface(x - 4, 0, x + 4, SEG_LEN, asphalt);
+        for (float lane_z = 3; lane_z < SEG_LEN - 3; lane_z += 9) {
+            if (fabsf(lane_z - z) < 7) continue;
+            hq(GEO_GROUND, x - 0.07f, lane_z, x + 0.07f, lane_z + 3.5f, 0.033f, paint);
+        }
+        float crossing = side * (ASPH + 2.6f);
+        for (int stripe = -3; stripe <= 3; stripe++) {
+            float sz = z + stripe * 0.87f;
+            hq(GEO_GROUND, crossing - 1.0f, sz - 0.18f, crossing + 1.0f, sz + 0.18f, 0.033f, paint);
+        }
+        // Fill the open blocks with small parks and parking courts.
+        for (int i = 0; i < 2; i++) {
+            float bz = k % 2 == 0 ? 28 + i * 48 : 53 + i * 48;
+            float bx = side * (i == 0 ? 19.0f : 82.0f);
+            if (near_lot(cax + bx, caz + bz, k, 4)) continue;
+            if ((i + k) % 2 == 0) {
+                solid(bx - 4.9f, -0.08f, bz - 7, bx + 4.9f, 0.16f, bz + 7, curb_mat,
+                      M(L_GRASS, 0x7e9b65));
+                tree_broad(V3(bx, 0.16f, bz), rf(4.6f, 6.7f), 0);
+                tree_broad(V3(bx, 0.16f, bz - 4.5f), rf(3.8f, 4.7f), 0);
+            } else {
+                lot_surface(bx - 6, bz - 9, bx + 6, bz + 9, asphalt);
+                for (int mark = -3; mark <= 3; mark++) {
+                    float zz = bz + mark * 2.7f;
+                    hq(GEO_GROUND, bx - 5.3f, zz - 0.04f, bx - 1.2f, zz + 0.04f, 0.033f, paint);
+                }
+            }
+        }
         for (int i = 0; i < 3; i++) {
             float bz = (k % 2 == 0 ? 20 : 40) + i * 30;
             float bx = side * rf(126, 132);

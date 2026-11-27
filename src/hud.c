@@ -1224,11 +1224,11 @@ static void open_world_menu(void)
 static void world_screen(void)
 {
     static const char *const details[WORLD_COUNT] = {
-        "Endless highway through changing country",
-        "Drive side streets and scavenge storefronts",
-        "Pine woods, ranger stations and fishing ponds",
-        "Snowy mountain roads and cold nights",
-        "Red-rock canyons, dust storms and salvage"
+        "Endless highway, changing biomes",
+        "Cross streets, shops and garages",
+        "Pine woods, camps and fishing",
+        "Snowy roads and cold nights",
+        "Red-rock canyons and wrecks"
     };
     DrawRectangle(0, 0, W, H, (Color){ 7, 10, 14, 180 });
     float width = 690 * S, x = (W - width) * 0.5f, y = (H - 492 * S) * 0.5f;
@@ -1240,7 +1240,9 @@ static void world_screen(void)
         float row = y + (77 + k * 76) * S;
         panel(rect(x + 18 * S, row, 654 * S, 67 * S), (Color){ 36, 42, 48, 255 });
         text(world_names[k], x + 32 * S, row + 11 * S, 20 * S, INK, 0);
-        text(details[k], x + 32 * S, row + 39 * S, 13 * S, DIM, 0);
+        float detail_size = 13 * S;
+        while (text_w(details[k], detail_size) > 348 * S) detail_size *= 0.95f;
+        text(details[k], x + 32 * S, row + 39 * S, detail_size, DIM, 0);
         if (button(rect(x + 393 * S, row + 14 * S, 122 * S, 39 * S), "CONTINUE", playable_save[k])) {
             next_world = k;
             want_continue = true;

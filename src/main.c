@@ -393,6 +393,7 @@ int main(int argc, char **argv)
     SetConfigFlags(flags);
     SetTraceLogLevel(LOG_WARNING);
     InitWindow(w, h, "Long Road");
+    if (!IsWindowReady()) return 1;
     SetExitKey(KEY_NULL);
     SetTargetFPS(shot_path ? 0 : 60);
     platform_init();
