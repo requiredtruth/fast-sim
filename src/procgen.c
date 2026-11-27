@@ -749,11 +749,21 @@ static Mesh item_model(int icon)
         TUBE(0,0,0,0,.24f,0,.073f,.073f,glass,glass);
         TUBE(0,.24f,0,0,.30f,0,.073f,.031f,glass,glass);
         TUBE(0,.30f,0,0,.34f,0,.032f,.034f,seam,metal);
+        for (int i = 0; i < 10; i++) {
+            float a = i * PI / 5;
+            Vector3 x = V3(cosf(a), 0, sinf(a)), z = V3(-sinf(a), 0, cosf(a));
+            mb_obox(&m, V3(.033f*x.x,.321f,.033f*x.z), V3(.003f,.014f,.0035f), x, V3(0,1,0), z, metal);
+        }
         TUBE(0,.08f,0,0,.17f,0,.076f,.076f,body,body);
         break;
     case ICON_CROSS:
         BOX(-.16f,0,-.11f,.16f,.15f,.11f,body);
         BOX(-.158f,.075f,-.112f,.158f,.093f,.112f,seam);
+        for (int i = -1; i <= 1; i += 2)
+            BOX(i*.102f-.019f,.066f,.11f,i*.102f+.019f,.112f,.123f,metal);
+        TUBE(-.057f,.085f,.151f,.057f,.085f,.151f,.013f,.013f,seam,metal);
+        BOX(-.066f,.068f,.105f,-.043f,.101f,.153f,seam);
+        BOX(.043f,.068f,.105f,.066f,.101f,.153f,seam);
         BOX(-.062f,.151f,-.018f,.062f,.158f,.018f,metal);
         BOX(-.018f,.151f,-.058f,.018f,.158f,.058f,metal);
         break;
@@ -792,6 +802,12 @@ static Mesh item_model(int icon)
         mb_ellipsoid(&m, V3(0,.13f,0), V3(.21f,.13f,.145f), 10, 6, body);
         BOX(-.175f,.06f,.07f,.175f,.15f,.145f,seam);
         BOX(-.025f,.061f,.145f,.025f,.137f,.152f,rubber);
+        for (int i = -1; i <= 1; i += 2) {
+            float x = i * .077f;
+            TUBE(x,.05f,-.12f,x,.19f,-.158f,.025f,.024f,seam,rubber);
+            TUBE(x,.19f,-.158f,x,.225f,-.09f,.024f,.02f,seam,rubber);
+            BOX(x-.029f,.094f,-.168f,x+.029f,.126f,-.129f,metal);
+        }
         break;
     case ICON_PLANK:
         for (int i = -1; i <= 1; i++) {

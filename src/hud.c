@@ -593,8 +593,8 @@ static void layout_touch(bool in_car)
 {
     memset(tc_r, 0, sizeof tc_r);
     float m = 26 * S, big = 52 * S, med = 38 * S, sm = 30 * S;
-    tc_pos[TC_PAUSE] = (Vector2){ W - 210 * S - 40 * S, 30 * S }; tc_r[TC_PAUSE] = 22 * S;
-    tc_pos[TC_BAG] = (Vector2){ W - 210 * S - 92 * S, 30 * S }; tc_r[TC_BAG] = 22 * S;
+    tc_pos[TC_PAUSE] = (Vector2){ W - 251 * S, 44 * S }; tc_r[TC_PAUSE] = 37 * S;
+    tc_pos[TC_BAG] = (Vector2){ W - 337 * S, 44 * S }; tc_r[TC_BAG] = 37 * S;
     if (in_car) {
         tc_pos[TC_GAS] = (Vector2){ W - m - big, H - m - big * 1.2f }; tc_r[TC_GAS] = big * 1.15f;
         tc_pos[TC_BRAKE] = (Vector2){ W - m - big * 3.4f, H - m - big * 0.9f }; tc_r[TC_BRAKE] = big * 0.95f;
@@ -660,9 +660,9 @@ bool hud_touch_update(Input *in, int w, int h)
                 else if (pos.y > 60 * S) t->ctl = TC_LOOK;
             }
             if (t->ctl == TC_AIM) aim_toggle = !aim_toggle;
-            if (t->ctl == TC_PAUSE) { ui_screen = UI_PAUSE; }
-            if (t->ctl == TC_BAG) { ui_screen = UI_PACK; }
-            if (t->ctl == TC_USE) survive_interact();
+            if (t->ctl == TC_PAUSE) { placement_cancel(); ui_screen = demo_active ? UI_PAUSE : UI_SETTINGS; }
+            if (t->ctl == TC_BAG && !demo_active) { placement_cancel(); ui_screen = UI_PACK; }
+            if (t->ctl == TC_USE && !demo_active) survive_interact();
         }
         seen[slot] = true;
         Touch *t = &touches[slot];
@@ -721,8 +721,9 @@ static void touch_button(int k, const char *label, int ic)
     if (tc_r[k] <= 0) return;
     Vector2 c = tc_pos[k];
     bool dn = tc_down[k] || (k == TC_AIM && aim_toggle);
-    DrawCircleV(c, tc_r[k], dn ? (Color){ 255, 153, 51, 150 } : (Color){ 0, 0, 0, 95 });
-    DrawRing(c, tc_r[k] - 2.5f * S, tc_r[k], 0, 360, 36, (Color){ 255, 255, 255, dn ? 200 : 90 });
+    bool primary = k == TC_BAG || k == TC_PAUSE;
+    DrawCircleV(c, tc_r[k], dn ? (Color){ 255, 153, 51, 150 } : (primary ? (Color){ 33, 66, 77, 240 } : (Color){ 0, 0, 0, 95 }));
+    DrawRing(c, tc_r[k] - 2.5f * S, tc_r[k], 0, 360, 36, (Color){ 255, 255, 255, dn || primary ? 220 : 90 });
     if (ic >= 0) icon(ic, (Vector2){ c.x, c.y - tc_r[k] * 0.12f }, tc_r[k] * 0.7f, (Color){ 255, 255, 255, 200 });
     float ts = fminf(tc_r[k] * 0.34f, 15 * S);
     text(label, c.x, ic >= 0 ? c.y + tc_r[k] * 0.38f : c.y - ts / 2, ts, (Color){ 255, 255, 255, 220 }, 1);
@@ -733,8 +734,8 @@ static void draw_touch(void)
     if (!touch_ui || ui_screen != UI_NONE) return;
     Ped *p = &peds[PLAYER];
     bool in_car = p->car >= 0 && p->state == PS_IN_CAR;
-    touch_button(TC_PAUSE, "II", -1);
-    touch_button(TC_BAG, "", ICON_BAG);
+    touch_button(TC_PAUSE, demo_active ? "DEMO" : "SETTINGS", -1);
+    if (!demo_active) touch_button(TC_BAG, "BAG", ICON_BAG);
     if (in_car) {
         touch_button(TC_GAS, "GAS", -1);
         touch_button(TC_BRAKE, "BRAKE", -1);
@@ -861,6 +862,8 @@ static void pack_screen(void)
         if (button(rect(d.x + 10 * S, by, bw, 44 * S), items[it].effect == E_LIGHT && items[it].value <= 1 ? (sv.torch_on ? "LIGHT OFF" : "LIGHT ON") : "USE", usable))
             item_use(it);
         if (button(rect(d.x + 20 * S + bw, by, bw, 44 * S), "DROP", true)) pack_drop(sel_slot);
+        if (button(rect(d.x + 10 * S, by - 50 * S, d.width - 20 * S, 44 * S), "PLACE ONE IN WORLD", peds[PLAYER].car < 0))
+            placement_begin(sel_slot);
         bool near_car = sv.home_car >= 0 && cars[sv.home_car].used && Vector2Distance((Vector2){ cars[sv.home_car].pos.x, cars[sv.home_car].pos.z }, (Vector2){ peds[PLAYER].pos.x, peds[PLAYER].pos.z }) < 8;
         if (button(rect(d.x + 30 * S + 2 * bw, by, bw, 44 * S), "TO TRUNK", near_car)) cargo_move(true, sel_slot);
     }
@@ -1043,6 +1046,30 @@ static void map_screen(void)
     Rectangle m = rect(f.x + 16 * S, f.y + 64 * S, f.width * 0.6f, f.height - 80 * S);
     DrawRectangleRounded(m, 0.04f, 4, (Color){ 30, 28, 24, 255 });
     Vector3 pp = peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos;
+    if (world_kind == WORLD_CITY) {
+        float scale = fminf(m.width, m.height) / 760;
+        Vector2 center = { m.x + m.width / 2, m.y + m.height / 2 };
+        BeginScissorMode((int)m.x, (int)m.y, (int)m.width, (int)m.height);
+        for (int i = 0; i < nlanes; i++) {
+            Lane *l = &lanes[i];
+            Vector2 a = { center.x - (l->a.x - pp.x)*scale, center.y - (l->a.z - pp.z)*scale };
+            Vector2 b = { center.x - (l->b.x - pp.x)*scale, center.y - (l->b.z - pp.z)*scale };
+            DrawLineEx(a, b, 2 * S, (Color){ 116, 133, 140, 255 });
+        }
+        for (int i = 0; i < MAX_CONTS; i++) {
+            Cont *c = &conts[i];
+            if (!c->used || c->placed || c->kind == CT_BAG) continue;
+            DrawCircleV((Vector2){center.x - (c->p.x-pp.x)*scale, center.y - (c->p.z-pp.z)*scale},
+                        3 * S, c->searched ? DIM : WARN);
+        }
+        DrawCircleV(center, 6 * S, ACCENT);
+        EndScissorMode();
+        float x = m.x + m.width + 22 * S;
+        text("METRO GRID", x, m.y, 20 * S, SAND, 0);
+        text("AMBER DOTS  SEARCHABLE SHOPS", x, m.y + 36 * S, 12 * S, INK, 0);
+        text("BLUE DOT  YOUR POSITION", x, m.y + 59 * S, 12 * S, INK, 0);
+        return;
+    }
     float s0 = road_s(pp);
     float span = 5000;
     Vector3 c = road_at(s0, NULL);
@@ -1108,7 +1135,7 @@ static void settings_screen(void)
 {
     Rectangle f = frame_rect();
     panel(f, PANEL);
-    if (close_button(f)) { ui_screen = mode == MODE_TITLE ? UI_TITLE : UI_PAUSE; settings_save(); return; }
+    if (close_button(f)) { ui_screen = mode == MODE_TITLE ? UI_TITLE : UI_NONE; settings_save(); return; }
     text("SETTINGS", f.x + 24 * S, f.y + 20 * S, 22 * S, SAND, 0);
     float x = f.x + 40 * S, y = f.y + 80 * S, w = f.width * 0.42f;
     static const char *qn[3] = { "LOW", "MEDIUM", "HIGH" };
@@ -1138,6 +1165,25 @@ static void settings_screen(void)
     y2 += 54 * S;
     if (toggle_row(x2, y2, w, "TOUCH CONTROLS", touch_ui)) touch_ui = !touch_ui;
     y2 += 54 * S;
+    static const char *const difficulty_names[] = { "PEACEFUL", "NORMAL", "HARD" };
+    text("DIFFICULTY", x2, y2 + 10 * S, 15 * S, INK, 0);
+    if (button(rect(x2 + w - 160 * S, y2, 160 * S, 44 * S), difficulty_names[difficulty], true)) {
+        difficulty = (difficulty + 1) % DIFF_COUNT;
+        settings_save();
+    }
+    y2 += 58 * S;
+#if defined(PLATFORM_ANDROID)
+    if (button(rect(x2, y2, w, 48 * S), "DOWNLOAD APK UPDATE", true))
+        OpenURL("https://github.com/requiredtruth/fast-sim/releases/latest/download/LongRoad.apk");
+#else
+    if (button(rect(x2, y2, w, 48 * S), "CHECK FOR UPDATES", true))
+        OpenURL("https://github.com/requiredtruth/fast-sim/releases/latest");
+#endif
+    y2 += 54 * S;
+    if (mode == MODE_PLAY) {
+        if (button(rect(x2, y2, w, 48 * S), "PAUSE MENU", true)) { settings_save(); ui_screen = UI_PAUSE; }
+        y2 += 54 * S;
+    }
     snprintf(b, sizeof b, "LONG ROAD %s", GAME_VERSION);
     text(b, x2, y2 + 20 * S, 12 * S, DIM, 0);
 }
@@ -1202,7 +1248,8 @@ static void pause_screen(void)
     if (button(rect(x, y + 128 * S, w, 52 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
     if (button(rect(x, y + 192 * S, w, 52 * S), "MODS", true)) ui_screen = UI_MODS;
     if (button(rect(x, y + 256 * S, w, 52 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
-    if (button(rect(x, y + 320 * S, w, 52 * S), "SAVE AND QUIT", true)) {
+    if (button(rect(x, y + 320 * S, w, 52 * S), demo_active ? "END DEMO" : "SAVE AND QUIT", true)) {
+        if (demo_active) { demo_active = false; mode = MODE_TITLE; ui_screen = UI_TITLE; return; }
         if (game_save()) { mode = MODE_TITLE; ui_screen = UI_TITLE; }
         else hud_big("Could not save this trip", 3);
     }
@@ -1212,11 +1259,13 @@ extern bool want_new_game, want_continue, want_quit;
 
 static bool playable_save[WORLD_COUNT];
 static int replace_world = -1;
+static bool demo_picker;
 
 static void open_world_menu(void)
 {
     for (int k = 0; k < WORLD_COUNT; k++) playable_save[k] = game_has_save(k);
     replace_world = -1;
+    demo_picker = false;
     mode = MODE_TITLE;
     ui_screen = UI_WORLDS;
 }
@@ -1225,7 +1274,7 @@ static void world_screen(void)
 {
     static const char *const details[WORLD_COUNT] = {
         "Endless highway, changing biomes",
-        "Cross streets, shops and garages",
+        "Original coastal city and downtown",
         "Pine woods, camps and fishing",
         "Snowy roads and cold nights",
         "Red-rock canyons and wrecks"
@@ -1233,7 +1282,7 @@ static void world_screen(void)
     DrawRectangle(0, 0, W, H, (Color){ 7, 10, 14, 180 });
     float width = 690 * S, x = (W - width) * 0.5f, y = (H - 492 * S) * 0.5f;
     panel(rect(x, y, width, 492 * S), (Color){ 24, 29, 34, 246 });
-    text("CHOOSE A WORLD", x + 24 * S, y + 22 * S, 29 * S, SAND, 0);
+    text(demo_picker ? "CHOOSE A DEMO WORLD" : "CHOOSE A WORLD", x + 24 * S, y + 22 * S, 29 * S, SAND, 0);
     if (button(rect(x + 555 * S, y + 19 * S, 110 * S, 38 * S), "BACK", true) ||
         IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACK)) { ui_screen = UI_TITLE; return; }
     for (int k = 0; k < WORLD_COUNT; k++) {
@@ -1243,13 +1292,14 @@ static void world_screen(void)
         float detail_size = 13 * S;
         while (text_w(details[k], detail_size) > 348 * S) detail_size *= 0.95f;
         text(details[k], x + 32 * S, row + 39 * S, detail_size, DIM, 0);
-        if (button(rect(x + 393 * S, row + 14 * S, 122 * S, 39 * S), "CONTINUE", playable_save[k])) {
+        if (button(rect(x + 393 * S, row + 14 * S, 122 * S, 39 * S), "CONTINUE", !demo_picker && playable_save[k])) {
             next_world = k;
             want_continue = true;
         }
-        const char *label = replace_world == k ? "REPLACE SAVE" : "NEW TRIP";
+        const char *label = demo_picker ? "WATCH DEMO" : replace_world == k ? "REPLACE SAVE" : "NEW TRIP";
         if (button(rect(x + 526 * S, row + 14 * S, 130 * S, 39 * S), label, true)) {
-            if (playable_save[k] && replace_world != k) replace_world = k;
+            if (demo_picker) { next_world = k; want_demo = true; }
+            else if (playable_save[k] && replace_world != k) replace_world = k;
             else { next_world = k; want_new_game = true; }
         }
     }
@@ -1263,6 +1313,7 @@ static void title_screen(void)
     text("PROCEDURAL DRIVING AND SURVIVAL", W * 0.08f + 4 * S, y + 80 * S, 16 * S, INK, 0);
     float w = 340 * S, x = W * 0.08f, by = H * 0.42f;
     if (button(rect(x, by, w, 54 * S), "CHOOSE WORLD", true)) open_world_menu();
+    if (button(rect(x + w + 20 * S, by, w, 54 * S), "AUTOPLAY DEMO", true)) { open_world_menu(); demo_picker = true; }
     if (button(rect(x, by + 64 * S, w, 54 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
     if (button(rect(x, by + 128 * S, w, 54 * S), "MODS", true)) ui_screen = UI_MODS;
     if (button(rect(x, by + 192 * S, w, 54 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
@@ -1299,10 +1350,14 @@ void hud_input(const Input *in)
     else if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) press_live = false;
     press_used = false;
     if (mode == MODE_TITLE || mode == MODE_DEAD) return;
+    if ((in->hit & BTN_PAUSE) && placement_active()) { placement_cancel(); return; }
+    if (placement_active() && IsKeyPressed(KEY_Z)) placement_rotate();
     if (in->hit & BTN_PAUSE) {
         if (ui_screen == UI_NONE) ui_screen = UI_PAUSE;
-        else { ui_screen = UI_NONE; loot_ci = -1; }
+        else { if (ui_screen == UI_SETTINGS) settings_save(); ui_screen = UI_NONE; loot_ci = -1; }
     }
+    if (demo_active) return;
+    if ((in->hit & BTN_BAG) && placement_active()) placement_cancel();
     if (in->hit & BTN_BAG) ui_screen = ui_screen == UI_PACK ? UI_NONE : UI_PACK;
     if (in->hit & BTN_MAP) ui_screen = ui_screen == UI_MAP ? UI_NONE : UI_MAP;
     if ((in->hit & BTN_USE) && ui_screen == UI_NONE) survive_interact();
@@ -1332,6 +1387,16 @@ void hud_draw(int w, int h)
     if (ui_screen == UI_NONE || ui_screen == UI_PAUSE) {
         survival_panel();
         world_panel();
+        if (placement_active()) {
+            float x = W * .5f - 210 * S, y = H - 85 * S;
+            text(is_touch_device() ? "AIM AT A SURFACE AND TAP USE" : "AIM AT A SURFACE   E PLACE   Z ROTATE   ESC CANCEL", W * .5f, y - 30 * S, 16 * S, SAND, 1);
+            if (button(rect(x, y, 195 * S, 48 * S), "ROTATE", true)) placement_rotate();
+            if (button(rect(x + 225 * S, y, 195 * S, 48 * S), "CANCEL", true)) placement_cancel();
+        }
+        if (demo_active) {
+            panel(rect(W * .5f - 170 * S, H - 87 * S, 340 * S, 38 * S), PANEL);
+            text(demo_status(), W * .5f, H - 78 * S, 14 * S, SAND, 1);
+        }
         next_stop();
         car_gauges();
         weapon_box();

@@ -86,7 +86,7 @@ static void populate(int si)
         return;
     }
     case STOP_CAMP: case STOP_TOWN: case STOP_WRECKS:
-        if (u < 0.25f + 0.55f * hostile_k) {
+        if (difficulty != DIFF_PEACEFUL && u < 0.25f + 0.55f * hostile_k) {
             s->hostile = true;
             int n = 2 + (int)(u2 * (2 + 3 * hostile_k));
             for (int k = 0; k < n; k++) spawn_npc(PED_COP, ROLE_RAIDER, stop_spot(s, frand(-14, 14), frand(-8, 8)), frand(0, 6.28f));
@@ -298,6 +298,7 @@ static void raider_cars(float dt)
 
 void raiders_ambush(void)
 {
+    if (difficulty == DIFF_PEACEFUL) return;
     Vector3 pp = peds[PLAYER].pos;
     int n = 2 + (int)(threat * 2.5f);
     for (int k = 0; k < n; k++) {
@@ -332,7 +333,7 @@ static void animals_spawn(void)
     int b = biome_at(s);
     int deer = 0, wolves = 0;
     for (int i = 0; i < MAX_ANIM; i++) if (an[i].used && !an[i].dead) { if (an[i].kind == AN_DEER) deer++; else wolves++; }
-    bool wolfy = (b == BIOME_FOREST || b == BIOME_SNOW || b == BIOME_PLAINS) && night_now();
+    bool wolfy = difficulty != DIFF_PEACEFUL && (b == BIOME_FOREST || b == BIOME_SNOW || b == BIOME_PLAINS) && night_now();
     int kind = -1;
     if (wolfy && wolves < 3 && frand(0, 1) < 0.5f * (0.5f + threat)) kind = AN_WOLF;
     else if (deer < 4 && b != BIOME_BADLANDS && frand(0, 1) < (b == BIOME_DESERT ? 0.3f : 0.7f)) kind = AN_DEER;
@@ -518,6 +519,8 @@ void raiders_tick(float dt)
     float s = road_s(pp);
     float km = sv.km;
     threat = Clamp(0.08f + km * 0.014f + (night_now() ? 0.18f : 0) + biome_mix(s, BIOME_BADLANDS) * 0.15f + biome_mix(s, BIOME_DESERT) * 0.05f, 0, 1);
+    if (difficulty == DIFF_PEACEFUL) threat = 0;
+    if (difficulty == DIFF_HARD) threat = fminf(1, threat * 1.55f + 0.12f);
     // people at the stops
     for (int i = 0; i < MAX_STOPS; i++) {
         if (!stops[i].used) { populated[i] = -1; continue; }
@@ -527,12 +530,15 @@ void raiders_tick(float dt)
         Ped *p = &peds[i];
         if (!p->used) continue;
         float d = dist_xz(p->pos, pp);
+        if (p->kind == PED_COP && difficulty == DIFF_PEACEFUL) { ped_remove(i); continue; }
         if (p->kind == PED_COP) raider_foot(i, dt);
         // people who wandered out of range are let go
         if (d > 300 && p->state != PS_IN_CAR) ped_remove(i);
         else if (p->state == PS_DEAD && pv[i].dead_s > 240) ped_remove(i);
     }
-    raider_cars(dt);
+    if (difficulty == DIFF_PEACEFUL) {
+        for (int i = 0; i < MAX_CARS; i++) if (cars[i].used && cars[i].ai == AI_COP && cars[i].driver != PLAYER) car_remove(i);
+    } else raider_cars(dt);
     // highway encounters
     event_t -= dt;
     if (event_t <= 0) {
@@ -541,12 +547,15 @@ void raiders_tick(float dt)
         bool driving = pl->car >= 0 && car_kmh(&cars[pl->car]) > 25;
         int active = 0;
         for (int i = 0; i < MAX_CARS; i++) if (cars[i].used && cars[i].ai == AI_COP) active++;
-        if (driving && active < 2 && sv.km > 2.5f && frand(0, 1) < (0.25f + threat * 0.6f) * tune_raiders) {
+        if (difficulty != DIFF_PEACEFUL && world_kind != WORLD_CITY && driving && active < 2 && sv.km > 2.5f && frand(0, 1) < (0.25f + threat * 0.6f) * tune_raiders) {
             if (raider_car_spawn(frand(0, 1) < 0.3f) >= 0) {
                 hud_msg("Headlights in the mirror. Raiders!", 3);
                 if (threat > 0.55f && frand(0, 1) < 0.4f) raider_car_spawn(false);
             }
         }
     }
-    animals_tick(dt);
+    if (difficulty == DIFF_PEACEFUL) {
+        for (int i = 0; i < MAX_ANIM; i++) if (an[i].kind == AN_WOLF) an[i].used = false;
+    }
+    if (world_kind != WORLD_CITY) animals_tick(dt);
 }

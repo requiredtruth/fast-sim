@@ -123,7 +123,7 @@ typedef struct {
     float yaw;
     int kind, stop;     // CT_*, index into stops
     uint32_t key;       // stable id: segment and slot, so search state survives streaming and saves
-    bool searched;
+    bool searched, placed;
     int car;            // CT_TRUNK: the wreck it belongs to, or -1
 } Cont;
 
@@ -138,7 +138,7 @@ typedef struct {
     float km;
 } Stop;
 
-#define MAX_LANES 2048
+#define MAX_LANES 30000
 #define MAX_CONTS 256
 #define MAX_STOPS 24
 
@@ -150,6 +150,12 @@ extern double world_ox, world_oz;     // world space origin offset after rebasin
 
 typedef enum { WORLD_ROAD, WORLD_CITY, WORLD_FOREST, WORLD_SNOW, WORLD_MESA, WORLD_COUNT } WorldKind;
 extern WorldKind world_kind, next_world;
+enum { DIFF_PEACEFUL, DIFF_NORMAL, DIFF_HARD, DIFF_COUNT };
+extern int difficulty;
+extern bool demo_active, want_demo;
+void demo_reset(void);
+Input demo_control(void);
+const char *demo_status(void);
 extern const char *const world_names[WORLD_COUNT];
 extern const char *const world_ids[WORLD_COUNT];
 void world_build(uint32_t seed);
@@ -382,6 +388,7 @@ bool recipe_can(int r);
 bool recipe_make(int r);
 void survive_tick(float dt);
 void survive_reset(uint32_t seed);
+bool survive_search(int ci);
 void survive_interact(void);             // BTN_USE: search, refuel, repair, trade, camp
 const char *survive_prompt(void);        // what BTN_USE would do now, or NULL
 void loot_container(int ci);
@@ -407,6 +414,10 @@ bool car_siphon(int ci);
 bool car_strip(int ci);
 bool car_claim(int ci);
 bool pack_drop(int slot);
+void placement_begin(int slot);
+void placement_rotate(void);
+void placement_cancel(void);
+bool placement_active(void);
 bool sleeping(void);
 extern float sleep_fade;
 extern float tune_hunger, tune_thirst, tune_fuel, tune_raiders, tune_loot, tune_cold;

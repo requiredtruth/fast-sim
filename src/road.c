@@ -8,7 +8,7 @@
 #include <string.h>
 
 double world_ox, world_oz;
-Lane lanes[MAX_LANES]; int nlanes = MAX_LANES;
+Lane lanes[MAX_LANES]; int nlanes;
 WalkNode *walk; int nwalk;
 Cont conts[MAX_CONTS];
 Stop stops[MAX_STOPS];
@@ -204,9 +204,10 @@ static double road_s_abs(double X, double Z, float *off)
     return s;
 }
 
-float road_s(Vector3 p) { return (float)road_s_abs(p.x + world_ox, p.z + world_oz, NULL); }
+float road_s(Vector3 p) { if (world_kind == WORLD_CITY) return START_S + p.z - city_start(NULL).z; return (float)road_s_abs(p.x + world_ox, p.z + world_oz, NULL); }
 float road_offset(float x, float z, float *s_out)
 {
+    if (world_kind == WORLD_CITY) { if (s_out) *s_out = road_s((Vector3){ x, 0, z }); return x - city_start(NULL).x; }
     float off;
     double s = road_s_abs(x + world_ox, z + world_oz, &off);
     if (s_out) *s_out = (float)s;
@@ -215,23 +216,22 @@ float road_offset(float x, float z, float *s_out)
 
 Vector3 road_at(float s, Vector3 *dir)
 {
+    if (world_kind == WORLD_CITY) {
+        Vector3 start = city_start(dir);
+        start.z += s - START_S;
+        start.y = city_ground_y(start.x, start.z);
+        return start;
+    }
     double x, z; float h, th;
     line_at(s, &x, &z, &h, &th);
     if (dir) *dir = dir_of(th);
     return V3((float)(x - world_ox), h + 0.03f, (float)(z - world_oz));
 }
 
-static float cross_street_z(int k) { return k % 2 == 0 ? 112 : 16; }
-
 bool on_road(float x, float z)
 {
-    float s;
-    float d = fabsf(road_offset(x, z, &s));
-    if (d < ASPH) return true;
-    if (world_kind != WORLD_CITY) return false;
-    int k = (int)floorf(s / (float)SEG_LEN);
-    return fabsf(d - 112) < 4 ||
-           (d < 136 && fabsf(s - k * (float)SEG_LEN - cross_street_z(k)) < 4);
+    if (world_kind == WORLD_CITY) return city_on_road(x, z);
+    return fabsf(road_offset(x, z, NULL)) < ASPH;
 }
 
 // ---------------------------------------------------------------- stops
@@ -275,10 +275,7 @@ static StopDesc *stop_desc(int k)
     d->k = k;
     d->kind = STOP_NONE;
     if (k == START_K) d->kind = STOP_GAS;
-    else if (world_kind == WORLD_CITY && k > 2) {
-        static const int districts[] = { STOP_TOWN, STOP_GARAGE, STOP_TOWN, STOP_DINER, STOP_TOWN, STOP_TRADER, STOP_TOWN, STOP_MOTEL };
-        d->kind = districts[k % (sizeof districts / sizeof *districts)];
-    } else if (world_kind == WORLD_FOREST && k > START_K && k % 5 == 0) {
+    else if (world_kind == WORLD_FOREST && k > START_K && k % 5 == 0) {
         d->kind = k % 10 == 0 ? STOP_RANGER : STOP_CAMP;
     } else if (world_kind == WORLD_SNOW && k > START_K && k % 7 == 0) {
         d->kind = k % 2 == 0 ? STOP_MOTEL : STOP_GARAGE;
@@ -301,7 +298,7 @@ static StopDesc *stop_desc(int k)
     }
     if (d->kind == STOP_NONE) return d;
     d->s = k * SEG_LEN + 64;
-    d->side = world_kind == WORLD_CITY && k != START_K ? (k % 2 ? -1 : 1) : (k == START_K || hu(k, 7, 1) < 0.5f) ? -1 : 1;
+    d->side = (k == START_K || hu(k, 7, 1) < 0.5f) ? -1 : 1;
     d->biome = biome_at((float)d->s);
     d->R = d->kind == STOP_WRECKS ? 0 : stop_R[d->kind];
     float dist = d->kind == STOP_TOWN ? 48 : d->kind == STOP_WRECKS ? 0 : d->R * 0.9f + 9 + hu(k, 7, 2) * 6;
@@ -391,7 +388,6 @@ static float height_sd(double s, float d, double X, double Z)
     float e = elev_at(s);
     float ad = fabsf(d);
     if (ad < ASPH) return e + 0.03f;
-    if (world_kind == WORLD_CITY && ad < 153) return 0;
     float w = sm(ASPH + 3, ASPH + 70, ad);
     float ditch = -0.6f * bump(ASPH + 0.6f, ASPH + 7.5f, ad);
     float h = mixf(e + ditch, e + hills(X, Z, s), w);
@@ -406,7 +402,7 @@ static float height_abs(double X, double Z)
     return height_sd(s, d, X, Z);
 }
 
-float ground_y(float x, float z) { return height_abs(x + world_ox, z + world_oz); }
+float ground_y(float x, float z) { return world_kind == WORLD_CITY ? city_ground_y(x, z) : height_abs(x + world_ox, z + world_oz); }
 
 static bool water_abs(double X, double Z, float *depth)
 {
@@ -428,6 +424,7 @@ static bool water_abs(double X, double Z, float *depth)
 
 bool is_water(float x, float z)
 {
+    if (world_kind == WORLD_CITY) return city_is_water(x, z);
     float dep;
     return water_abs(x + world_ox, z + world_oz, &dep) && dep > 0.6f;
 }
@@ -682,7 +679,6 @@ static void car_add(int model, Vector3 p, float yaw, bool burnt)
 
 static Mat ground_mat(double s, float d)
 {
-    if (world_kind == WORLD_CITY && fabsf(d) < 145) return M(L_CONCRETE, 0xa9a6a0);
     float grass = 0, r = 0, g = 0, b = 0;
     static const float gw[BIOME_COUNT] = { 0.05f, 0.78f, 0.95f, 0.02f, 0.25f };
     static const uint32_t col[BIOME_COUNT] = { 0xf2e2c4, 0xf0f0d8, 0xd8e8c8, 0xf0b090, 0xf4f8ff };
@@ -1405,72 +1401,6 @@ static bool near_lot(double X, double Z, int k, float pad)
     return false;
 }
 
-static void build_district(int k)
-{
-    // Cross streets link the highway with the parallel streets on either side.
-    float z = cross_street_z(k);
-    Mat asphalt = M(L_ASPHALT, 0x909497);
-    Mat paint = mf(M(L_PLAIN, 0xe2dcc3), F_DECAL, 0);
-    Mat curb_mat = M(L_CURB, 0xb8b4ae);
-    lot_surface(-136, z - 4, -ASPH, z + 4, asphalt);
-    lot_surface(ASPH, z - 4, 136, z + 4, asphalt);
-    for (int side = -1; side <= 1; side += 2) {
-        float x = side * 112.0f;
-        lot_surface(x - 4, 0, x + 4, SEG_LEN, asphalt);
-        for (float lane_z = 3; lane_z < SEG_LEN - 3; lane_z += 9) {
-            if (fabsf(lane_z - z) < 7) continue;
-            hq(GEO_GROUND, x - 0.07f, lane_z, x + 0.07f, lane_z + 3.5f, 0.033f, paint);
-        }
-        float crossing = side * (ASPH + 2.6f);
-        for (int stripe = -3; stripe <= 3; stripe++) {
-            float sz = z + stripe * 0.87f;
-            hq(GEO_GROUND, crossing - 1.0f, sz - 0.18f, crossing + 1.0f, sz + 0.18f, 0.033f, paint);
-        }
-        // Fill the open blocks with small parks and parking courts.
-        for (int i = 0; i < 2; i++) {
-            float bz = k % 2 == 0 ? 28 + i * 48 : 53 + i * 48;
-            float bx = side * (i == 0 ? 19.0f : 82.0f);
-            if (near_lot(cax + bx, caz + bz, k, 4)) continue;
-            if ((i + k) % 2 == 0) {
-                solid(bx - 4.9f, -0.08f, bz - 7, bx + 4.9f, 0.16f, bz + 7, curb_mat,
-                      M(L_GRASS, 0x7e9b65));
-                tree_broad(V3(bx, 0.16f, bz), rf(4.6f, 6.7f), 0);
-                tree_broad(V3(bx, 0.16f, bz - 4.5f), rf(3.8f, 4.7f), 0);
-            } else {
-                lot_surface(bx - 6, bz - 9, bx + 6, bz + 9, asphalt);
-                for (int mark = -3; mark <= 3; mark++) {
-                    float zz = bz + mark * 2.7f;
-                    hq(GEO_GROUND, bx - 5.3f, zz - 0.04f, bx - 1.2f, zz + 0.04f, 0.033f, paint);
-                }
-            }
-        }
-        for (int i = 0; i < 3; i++) {
-            float bz = (k % 2 == 0 ? 20 : 40) + i * 30;
-            float bx = side * rf(126, 132);
-            float h = rf(12, 38), hw = rf(6, 9), hd = rf(7, 10);
-            Mat wall = M(i == 0 ? L_BRICK : L_PANEL, i == 0 ? 0xb58069 : i == 1 ? 0x9da7b1 : 0xbeb4a1);
-            solid(bx - hw, 0, bz - hd, bx + hw, h, bz + hd, wall, M(L_CONCRETE, 0x777c81));
-            Mat glass = mf(M(L_PANEL, 0x253e4e), F_SELF, (k + i) % 3 == 0 ? 0.35f : 0.05f);
-            for (float floor = 3; floor + 1.3f < h; floor += 3.1f) {
-                for (int bay = -2; bay <= 2; bay++) {
-                    float in = bx - side * (hw + 0.02f);
-                    float wz = bz + bay * hd * 0.35f;
-                    quadv(GEO_SOLID, V3(in, floor, wz - side * 0.8f),
-                          V3(0, 0, side * 1.6f), V3(0, 1.3f, 0), 0, 0, 1, 1, glass);
-                }
-            }
-        }
-        float curb = side * (ASPH + 0.9f);
-        lot_surface(curb - 0.75f, 0, curb + 0.75f, z - 4, M(L_SIDEWALK, 0xd2d0c8));
-        lot_surface(curb - 0.75f, z + 4, curb + 0.75f, SEG_LEN, M(L_SIDEWALK, 0xd2d0c8));
-        float lz = z + (k % 2 == 0 ? -7 : 7);
-        solid(curb - 0.07f, 0, lz - 0.07f, curb + 0.07f, 5, lz + 0.07f, M_STEEL, M_STEEL);
-        sbox(curb - 0.3f, 4.94f, lz - 0.16f, curb + 0.3f, 5.10f, lz + 0.16f, M_STEEL,
-             mf(M(L_PLAIN, 0xffe4bd), F_SELF, 2.0f));
-        lamp_add(V3(curb, 4.85f, lz));
-    }
-}
-
 static void build_roadside(int k)
 {
     double s0 = k * SEG_LEN;
@@ -1701,8 +1631,7 @@ static void seg_build(int k)
     frame_reset();
     build_terrain(k);
     build_road_surface(k);
-    if (world_kind == WORLD_CITY) build_district(k);
-    else build_roadside(k);
+    build_roadside(k);
     StopDesc *d = stop_desc(k);
     if (d->kind != STOP_NONE) {
         stop_build(d);
@@ -1880,6 +1809,7 @@ static void lanes_update(int kp)
 
 int nearest_lane(Vector3 p, float maxd)
 {
+    if (world_kind == WORLD_CITY) return city_nearest_lane(p, maxd);
     float s;
     road_offset(p.x, p.z, &s);
     int k = (int)floorf(s / (float)SEG_LEN);
@@ -1900,9 +1830,9 @@ int nearest_lane(Vector3 p, float maxd)
     return best;
 }
 
-int nearest_walk(Vector3 p, float maxd) { return -1; }
-int light_state(int light) { return 0; }
-bool walk_light_ok(int light) { return true; }
+int nearest_walk(Vector3 p, float maxd) { return world_kind == WORLD_CITY ? city_nearest_walk(p, maxd) : -1; }
+int light_state(int light) { return world_kind == WORLD_CITY ? city_light_state(light) : 0; }
+bool walk_light_ok(int light) { return world_kind != WORLD_CITY || city_walk_light_ok(light); }
 
 // ---------------------------------------------------------------- collision queries
 
@@ -1969,6 +1899,7 @@ static void push_visit(const Box *b, float ox, float oz, void *ud)
 
 bool world_push(Vector3 *p, float radius, float height)
 {
+    if (world_kind == WORLD_CITY) return city_push(p, radius, height);
     PushQ q = { p, radius, height, false };
     for (int it = 0; it < 2; it++) boxes_near(*p, radius + 1, push_visit, &q);
     return q.hit;
@@ -1991,6 +1922,16 @@ static void obox_visit(const Box *b, float ox, float oz, void *ud)
 
 int world_obox(Vector3 c, float r, WBox *out, int max)
 {
+    if (world_kind == WORLD_CITY) {
+        BoundingBox bounds[64];
+        int n = city_boxes(c, r, bounds, max < 64 ? max : 64);
+        for (int i = 0; i < n; i++) {
+            Vector3 a = bounds[i].min, b = bounds[i].max;
+            out[i] = (WBox){ Vector3Scale(Vector3Add(a, b), .5f), (b.x-a.x)*.5f, (b.z-a.z)*.5f,
+                            a.y, b.y, {1,0,0}, {0,0,1} };
+        }
+        return n;
+    }
     BoxQ q = { out, 0, max, c, r };
     boxes_near(c, r, obox_visit, &q);
     return q.n;
@@ -1998,6 +1939,7 @@ int world_obox(Vector3 c, float r, WBox *out, int max)
 
 int world_boxes(Vector3 c, float r, BoundingBox *out, int max)
 {
+    if (world_kind == WORLD_CITY) return city_boxes(c, r, out, max);
     WBox tmp[64];
     int n = world_obox(c, r, tmp, max < 64 ? max : 64);
     for (int i = 0; i < n; i++) {
@@ -2038,6 +1980,7 @@ static void ray_visit(const Box *b, float ox, float oz, void *ud)
 
 bool world_ray(Vector3 o, Vector3 dir, float maxd, Hit *h)
 {
+    if (world_kind == WORLD_CITY) return city_ray(o, dir, maxd, h);
     RayQ q = { o, dir, maxd, V3(0, 1, 0), false };
     // terrain: march, then refine
     float t = 0, step = 0.75f, prev_t = 0;
@@ -2164,6 +2107,7 @@ static void weather_pick(void)
 
 void world_tick(float dt)
 {
+    if (world_kind == WORLD_CITY) { city_tick(dt); return; }
     stream(false);
     weather_t -= dt;
     if (weather_t <= 0) weather_pick();
@@ -2224,6 +2168,7 @@ static float cull_r;
 
 void world_cull(Matrix m, Vector3 center, float radius)
 {
+    if (world_kind == WORLD_CITY) { city_cull(m, center, radius); return; }
     float r0[4] = { m.m3 + m.m0, m.m7 + m.m4, m.m11 + m.m8, m.m15 + m.m12 };
     float r1[4] = { m.m3 - m.m0, m.m7 - m.m4, m.m11 - m.m8, m.m15 - m.m12 };
     float r2[4] = { m.m3 + m.m1, m.m7 + m.m5, m.m11 + m.m9, m.m15 + m.m13 };
@@ -2255,6 +2200,7 @@ static bool box_visible(Vector3 mn, Vector3 mx)
 
 void world_draw_part(int part)
 {
+    if (world_kind == WORLD_CITY) { city_draw_part(part); return; }
     for (int i = 0; i < NSEG; i++) {
         Seg *g = &segs[i];
         if (!g->used || !g->built || !g->count[part]) continue;
@@ -2277,10 +2223,11 @@ void world_draw(int pass)
     if (pass == PASS_MAIN) { world_draw_part(GEO_WATER); world_draw_part(GEO_GLASS); }
 }
 
-void world_frame(void) {}
+void world_frame(void) { if (world_kind == WORLD_CITY) city_frame(); }
 
 int world_lamps(Vector3 near, Vector4 *out, int max)
 {
+    if (world_kind == WORLD_CITY) return city_lamps(near, out, max);
     float dist[32];
     int n = 0;
     for (int i = 0; i < NSEG; i++) {
@@ -2321,7 +2268,11 @@ void world_build(uint32_t seed)
     sd_init = false; rb_init = false;
     M_STEEL = M(L_METAL, 0x9aa0a6); M_BLACK = M(L_PLAIN, 0x202224); M_DARK = M(L_PLAIN, 0x3a3e42); M_WHITE = M(L_PLAIN, 0xf0f0ec);
     if (!tex_done) { texture_build(quality == 0 ? 256 : 512); tex_done = true; }
-    road_ensure(1024);
+    city_release();
+    nlanes = LANE_RING * 16;
+    memset(lanes, 0, sizeof lanes);
+    if (world_kind == WORLD_CITY) city_build(seed);
+    else road_ensure(1024);
     weather_rain = weather_fog = weather_dust = weather_snow = 0;
     wt_rain = wt_fog = wt_dust = wt_snow = 0;
     wt_wind = weather_wind = 0.2f;
@@ -2330,10 +2281,14 @@ void world_build(uint32_t seed)
     weather_t = 300;
 }
 
-void world_stream_all(void) { stream(true); }
+void world_stream_all(void) { if (world_kind != WORLD_CITY) stream(true); }
 
 void world_reload_active(void)
 {
+    if (world_kind == WORLD_CITY) {
+        for (int i = 0; i < MAX_CONTS; i++) if (conts[i].used) conts[i].searched = world_flag(conts[i].key);
+        return;
+    }
     for (int i = 0; i < NSEG; i++) if (segs[i].live) seg_deactivate(&segs[i]);
     stream(true);
 }

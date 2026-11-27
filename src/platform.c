@@ -5,7 +5,7 @@
 #include <string.h>
 #include "game.h"
 
-bool tilt_steer = true, tilt_walk = true;
+bool tilt_steer = false, tilt_walk = false;
 float tilt_sens = 1.0f;
 bool tilt_invert;
 

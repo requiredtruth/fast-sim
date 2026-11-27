@@ -21,7 +21,7 @@ Open **Choose World** on the title screen. Each world keeps its own trip. Existi
 | World | Terrain and stops |
 | --- | --- |
 | Long Road | The original endless highway through mixed biomes |
-| Metro Grid | A procedural city with cross streets, storefronts, garages and a skyline |
+| Metro Grid | The original fork’s coastal city with its downtown, waterfront, shop interiors and connected street grid |
 | Pine Country | Dense woodland, ranger stations, campsites and fishing ponds |
 | Frostline | Snowy mountain roads with frequent garages and motels |
 | Red Mesa | Red-rock badlands with wrecks and trading posts |
@@ -54,7 +54,13 @@ Dropping an item places its 3D model at your feet. Ground caches stay in that wo
 | Lights, horn, handbrake | LIGHTS, HORN, HAND | L, H, Space | |
 | Trip map, camera, pause | Pause menu, CAM | M, V, Esc | Start |
 
-Settings has tilt steering, tilt to go, tilt sensitivity, invert and **Calibrate**: hold the phone the way you like and tap it. Graphics quality has three levels, and phones start on Low.
+Settings has tilt steering, tilt to go, tilt sensitivity, invert and **Calibrate**: hold the phone the way you like and tap it. Graphics start on High. Both tilt controls start off. Difficulty starts on Peaceful, which keeps survival mechanics active and suppresses raiders and wolves. Normal and Hard add hostile encounters.
+
+Use **Place One in World** from the Pack to position an item on the ground, a counter or another flat surface. Aim at the surface, rotate with **Z** or the touch button, then press **Use** to place it.
+
+**Autoplay Demo** lets the game drive, scavenge, craft, refuel and rest. Pick any world. Use **End Demo** from its pause menu to return to the title. Demo runs are separate from saved trips.
+
+On Android, **Settings → Download APK Update** opens the latest GitHub APK. Install it from Android’s installer.
 
 ## Mods
 
@@ -141,3 +147,17 @@ The sound bank is packed from `assets/sfx` with `tools/pack_sfx.py`, which needs
 - Built on [Out on Parole](https://github.com/shaydex-codes/outonparole) and its renderer, physics, animation, effects and mixer code.
 - Sounds from Out on Parole: Kenney and OpenGameArt (Tabasco / Vincent Sevedge, kurt, rubberduck, StarNinjas, Joth, TinyWorlds, Till Behrend, Nocturnal_Vanguard, WuxiaScrub), CC0. Engines, wind and rain are synthesized.
 - [raylib](https://www.raylib.com) by Ramon Santamaria and contributors, zlib licence.
+
+
+## Android release signing
+
+The official build uses the `LONGROAD_SIGNING_KEY` and `LONGROAD_KEYSTORE_PASSWORD` repository Actions secrets. The key secret is base64-encoded PKCS#12 with alias `longroad`. Keep the same pair across releases for Android to install updates over the existing app.
+
+To provision the v2.2.0 key from the private backup, extract it into a private directory and run:
+
+```bash
+base64 -w0 LongRoad.p12 | gh secret set LONGROAD_SIGNING_KEY --repo requiredtruth/fast-sim
+gh secret set LONGROAD_KEYSTORE_PASSWORD --repo requiredtruth/fast-sim < password.txt
+```
+
+The public `.cms` asset contains only the encrypted bootstrap backup. Store the extracted key and password privately.

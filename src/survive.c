@@ -23,6 +23,8 @@ static uint32_t cont_rolled[MAX_CONTS];   // key the contents were rolled for, 0
 #define MAX_GROUND_DROPS 96
 static uint32_t drop_key = DROP_BASE;
 static int ground_drop(Vector3 p, int kind);
+static int place_slot = -1;
+static float place_yaw;
 
 static float msg_cd, save_cd = 60, fish_t = -1, act_t = -1;
 static int act_kind, act_car;
@@ -457,7 +459,7 @@ bool pack_drop(int slot)
     int left = s.n;
     for (int i = 0; i < MAX_CONTS && left > 0; i++) {
         Cont *c = &conts[i];
-        if (c->used && c->key >= DROP_BASE && c->kind == CT_BAG &&
+        if (c->used && c->key >= DROP_BASE && c->kind == CT_BAG && !c->placed &&
             dist_xz(c->p, p) < 1.4f && fabsf(c->p.y - p.y) < 0.75f)
             left = pack_add(cont_items[i], 8, s.item, left);
     }
@@ -469,6 +471,53 @@ bool pack_drop(int slot)
     pack[slot].n = left;
     sfx(S_DOOR, peds[PLAYER].pos, 0.3f, 1.5f);
     return left < s.n;
+}
+
+bool placement_active(void) { return place_slot >= 0; }
+void placement_cancel(void) { place_slot = -1; }
+void placement_rotate(void) { place_yaw = fmodf(place_yaw + PI / 6, 2 * PI); }
+
+void placement_begin(int slot)
+{
+    Ped *p = &peds[PLAYER];
+    if (p->car >= 0 || slot < 0 || slot >= PACK_SLOTS || pack[slot].n <= 0) return;
+    place_slot = slot;
+    place_yaw = p->yaw;
+    ui_screen = UI_NONE;
+}
+
+static bool placement_target(Vector3 *out)
+{
+    Ped *p = &peds[PLAYER];
+    if (!placement_active() || p->car >= 0) return false;
+    Vector3 dir = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    Hit hit;
+    if (!world_ray(cam.position, dir, 15, &hit) || hit.n.y < .62f ||
+        dist_xz(hit.p, p->pos) > 3.6f || fabsf(hit.p.y - p->pos.y) > 1.7f ||
+        is_water(hit.p.x, hit.p.z)) return false;
+    for (int ci = 0; ci < MAX_CONTS; ci++) {
+        Cont *c = &conts[ci];
+        if (c->used && c->placed && Vector3Distance(c->p, hit.p) < .35f) return false;
+    }
+    *out = Vector3Add(hit.p, (Vector3){ 0, .025f, 0 });
+    return true;
+}
+
+static void placement_confirm(void)
+{
+    Slot *slot = &pack[place_slot];
+    Vector3 p;
+    if (slot->n <= 0) { placement_cancel(); return; }
+    if (!placement_target(&p)) { hud_msg("Aim at dry ground or a flat surface in reach", 2); return; }
+    int ci = ground_drop(p, CT_BAG);
+    if (ci < 0) { hud_msg("No space for another placed item", 2); return; }
+    Cont *c = &conts[ci];
+    c->placed = true;
+    c->yaw = place_yaw;
+    cont_items[ci][0] = (Slot){ .item = slot->item, .n = 1 };
+    slot->n--;
+    placement_cancel();
+    sfx(S_PICKUP, p, .6f, .85f);
 }
 
 // ---------------------------------------------------------------- trunk and other cars
@@ -635,7 +684,7 @@ void survive_sleep(float hours)
     sleep_fade = 2.0f;
     // out in the open, someone might find you
     bool safe = bed || tent;
-    float risk = (safe ? 0.05f : in_car ? 0.18f : 0.3f) * threat * tune_raiders;
+    float risk = difficulty == DIFF_PEACEFUL ? 0 : (safe ? 0.05f : in_car ? 0.18f : 0.3f) * threat * tune_raiders;
     if (frand(0, 1) < risk) { raiders_ambush(); hud_big("You wake to voices", 3); }
     else hud_big(bed ? "You slept well" : tent ? "A night in the tent" : in_car ? "A cramped night in the car" : "You slept rough", 3);
     game_save();
@@ -725,8 +774,23 @@ static void fill_bottles(bool clean)
     sfx(S_PICKUP, peds[PLAYER].pos, 0.5f, 0.6f);
 }
 
+bool survive_search(int ci)
+{
+    if (ci < 0 || ci >= MAX_CONTS || !conts[ci].used || peds[PLAYER].car >= 0 || search_ci >= 0 ||
+        Vector3Distance(peds[PLAYER].pos, conts[ci].p) > 2.1f) return false;
+    Cont *c = &conts[ci];
+    if (c->key && c->key < DROP_BASE && world_flag(exhausted_key(c->key))) return false;
+    if (c->searched) { loot_open(ci); return true; }
+    search_ci = ci;
+    search_t = 0;
+    ped_play(PLAYER, A_INTERACT);
+    sfx(S_DOOR, c->p, .5f, .9f);
+    return true;
+}
+
 void survive_interact(void)
 {
+    if (placement_active()) { placement_confirm(); return; }
     Ped *p = &peds[PLAYER];
     survive_prompt();
     switch (prompt_kind) {
@@ -904,8 +968,21 @@ void survive_tick(float dt)
     }
 }
 
+static void item_draw(int item, Vector3 pos, float angle, bool preview)
+{
+    Item *it = &items[item];
+    Matrix at = MatrixMultiply(MatrixRotateY(angle), MatrixTranslate(pos.x, pos.y, pos.z));
+    Color tint = preview ? (Color){ 151, 230, 180, 255 } : (Color){ it->color >> 16, it->color >> 8, it->color, 255 };
+    if (it->kind == IK_WEAPON && it->weapon > W_FIST && it->weapon < W_COUNT) {
+        at = MatrixMultiply(MatrixTranslate(0, .19f, 0), at);
+        draw_mesh(gun_mesh[it->weapon], at, preview ? tint : WHITE, MAT_PROP);
+    } else draw_mesh(item_mesh[it->icon], at, tint, MAT_PROP);
+}
+
 void survive_draw(int pass)
 {
+    Vector3 target;
+    if (pass == PASS_MAIN && placement_target(&target)) item_draw(pack[place_slot].item, target, place_yaw, true);
     for (int i = 0; i < MAX_CONTS; i++) {
         Cont *c = &conts[i];
         if (!c->used || c->kind != CT_BAG || dist_xz(c->p, cam.position) > 26) continue;
@@ -916,15 +993,9 @@ void survive_draw(int pass)
         for (int j = 0; j < 8; j++) {
             Slot slot = cont_items[i][j];
             if (slot.n <= 0 || slot.item >= nitems) continue;
-            Item *it = &items[slot.item];
-            float a = j * 2.39996f, spread = j == 0 ? 0 : 0.26f + 0.035f * j;
+            float a = c->placed ? c->yaw : j * 2.39996f, spread = j == 0 ? 0 : 0.26f + 0.035f * j;
             Vector3 pos = Vector3Add(c->p, (Vector3){ cosf(a) * spread, 0.015f, sinf(a) * spread });
-            Matrix at = MatrixMultiply(MatrixRotateY(a), MatrixTranslate(pos.x, pos.y, pos.z));
-            Color tint = { it->color >> 16, it->color >> 8, it->color, 255 };
-            if (it->kind == IK_WEAPON && it->weapon > W_FIST && it->weapon < W_COUNT) {
-                at = MatrixMultiply(MatrixTranslate(0, 0.19f, 0), at);
-                draw_mesh(gun_mesh[it->weapon], at, WHITE, MAT_PROP);
-            } else draw_mesh(item_mesh[it->icon], at, tint, MAT_PROP);
+            item_draw(slot.item, pos, a, false);
         }
     }
     if (sv.camp_on) {
@@ -968,6 +1039,7 @@ void survive_reset(uint32_t seed)
     msg_cd = search_t = sleep_fade = 0;
     camp_tent = false;
     drop_key = DROP_BASE;
+    placement_cancel();
     (void)seed;
 }
 
@@ -984,14 +1056,14 @@ EM_JS(void, web_save_del, (const char *k), { try { localStorage.removeItem(UTF8T
 static const char *save_key(WorldKind kind)
 {
     static char key[64];
-    snprintf(key, sizeof key, kind == WORLD_ROAD ? "longroad_trip" : "longroad_trip_%s", world_ids[kind]);
+    snprintf(key, sizeof key, kind == WORLD_ROAD ? "longroad_trip" : "longroad_trip_%s", kind == WORLD_CITY ? "original-city" : world_ids[kind]);
     return key;
 }
 #else
 static void save_path(char *out, int n, WorldKind kind)
 {
     if (kind == WORLD_ROAD) snprintf(out, n, "%s/trip.sav", save_dir());
-    else snprintf(out, n, "%s/trip-%s.sav", save_dir(), world_ids[kind]);
+    else snprintf(out, n, "%s/trip-%s.sav", save_dir(), kind == WORLD_CITY ? "original-city" : world_ids[kind]);
 }
 #endif
 
@@ -1004,6 +1076,7 @@ static void put_inv(char **w, char *end, const char *key, Slot *inv, int ns)
 
 bool game_save(void)
 {
+    if (demo_active) return true;
     Ped *p = &peds[PLAYER];
     if (!p->used || mode == MODE_DEAD || p->state == PS_DEAD) return false;
     static char buf[131072];
@@ -1028,7 +1101,7 @@ bool game_save(void)
     for (int i = 0; i < MAX_CONTS; i++) {
         Cont *c = &conts[i];
         if (!c->used || c->key < DROP_BASE || c->kind != CT_BAG) continue;
-        w += snprintf(w, end - w, "drop=%.3f %.3f %.3f ", c->p.x + world_ox, (double)c->p.y, c->p.z + world_oz);
+        w += snprintf(w, end - w, "drop=%.3f %.3f %.3f %.3f ", c->p.x + world_ox, (double)c->p.y, c->p.z + world_oz, c->placed ? c->yaw : -100.0f);
         put_inv(&w, end, "items", cont_items[i], 8);
     }
     uint32_t *fl;
@@ -1125,7 +1198,7 @@ bool game_load(void)
     Ped *p = &peds[PLAYER];
     if (p->car >= 0) { p->car = -1; p->state = PS_IDLE; }
     Vector3 d = { (float)(px - world_ox), 0, (float)(pz - world_oz) };
-    world_rebase(d);
+    if (world_kind != WORLD_CITY) world_rebase(d);
     p->pos = (Vector3){ (float)(px - world_ox), py, (float)(pz - world_oz) };
     p->yaw = yaw;
     extern float cam_yaw;
@@ -1181,12 +1254,20 @@ bool game_load(void)
     q = text;
     while ((q = strstr(q, "\ndrop="))) {
         double x, z;
-        float y;
+        float y, angle = -100;
         char line[512];
-        if (sscanf(++q, "drop=%lf %f %lf items=%511[^\n]", &x, &y, &z, line) != 4 ||
-            !isfinite(x) || !isfinite(y) || !isfinite(z) || fabs(x) > 2e7 || fabs(z) > 2e7) continue;
+        q++;
+        bool parsed = sscanf(q, "drop=%lf %f %lf %f items=%511[^\n]", &x, &y, &z, &angle, line) == 5;
+        if (!parsed) {
+            angle = -100;
+            parsed = sscanf(q, "drop=%lf %f %lf items=%511[^\n]", &x, &y, &z, line) == 4;
+        }
+        if (!parsed || !isfinite(angle) || !isfinite(x) || !isfinite(y) || !isfinite(z) ||
+            fabs(x) > 2e7 || fabs(z) > 2e7) continue;
         int ci = ground_drop((Vector3){ (float)(x - world_ox), y, (float)(z - world_oz) }, CT_BAG);
         if (ci >= 0) {
+            conts[ci].placed = angle != -100;
+            conts[ci].yaw = conts[ci].placed ? angle : 0;
             get_inv(line, cont_items[ci], 8);
             bool empty = true;
             for (int i = 0; i < 8; i++) if (cont_items[ci][i].n > 0) empty = false;

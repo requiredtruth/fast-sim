@@ -16,6 +16,8 @@ float game_s;
 uint64_t ticks;
 uint32_t world_seed;
 WorldKind world_kind, next_world;
+int difficulty = DIFF_PEACEFUL;
+bool demo_active, want_demo;
 const char *const world_names[WORLD_COUNT] = { "LONG ROAD", "METRO GRID", "PINE COUNTRY", "FROSTLINE", "RED MESA" };
 const char *const world_ids[WORLD_COUNT] = { "road", "city", "forest", "snow", "mesa" };
 bool want_new_game, want_continue, want_quit;
@@ -42,8 +44,8 @@ void render_set_quality(int q);
 void settings_save(void)
 {
     char b[256];
-    snprintf(b, sizeof b, "quality=%d\ntilt_steer=%d\ntilt_walk=%d\ntilt_invert=%d\ntilt_sens=%.2f\nvolume=%.2f\n",
-             quality, tilt_steer, tilt_walk, tilt_invert, tilt_sens, audio_volume);
+    snprintf(b, sizeof b, "quality=%d\ntilt_steer=%d\ntilt_walk=%d\ntilt_invert=%d\ntilt_sens=%.2f\nvolume=%.2f\ndifficulty=%d\n",
+             quality, tilt_steer, tilt_walk, tilt_invert, tilt_sens, audio_volume, difficulty);
     plat_put("settings", b);
 }
 
@@ -60,6 +62,7 @@ static void settings_load(void)
     if ((p = strstr(t, "tilt_invert=")) && sscanf(p, "tilt_invert=%d", &c) == 1) tilt_invert = c;
     if ((p = strstr(t, "tilt_sens=")) && sscanf(p, "tilt_sens=%f", &s) == 1) tilt_sens = s;
     if ((p = strstr(t, "volume=")) && sscanf(p, "volume=%f", &v) == 1) audio_volume = v;
+    if ((p = strstr(t, "difficulty=")) && sscanf(p, "difficulty=%d", &q) == 1 && q >= 0 && q < DIFF_COUNT) difficulty = q;
     free(t);
 }
 
@@ -179,7 +182,7 @@ void new_game(uint32_t seed)
     int gas = -1;
     for (int i = 0; i < MAX_STOPS; i++) if (stops[i].used && stops[i].kind == STOP_GAS && stops[i].km < 0.6f) gas = i;
     float yaw = atan2f(dir.x, dir.z);
-    Vector3 car_at = Vector3Add(at, (Vector3){ dir.z * -6, 0, -dir.x * -6 });
+    Vector3 car_at = Vector3Add(at, (Vector3){ dir.z * (world_kind == WORLD_CITY ? 2 : -6), 0, dir.x * 6 });
     float car_yaw = yaw;
     if (gas >= 0) {
         Stop *s = &stops[gas];
@@ -227,7 +230,7 @@ static void tick(const Input *in)
     ticks++;
     // far from the origin: shift everything back, the world keeps its true position
     Vector3 f = peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos;
-    if (fabsf(f.x) > 2500 || fabsf(f.z) > 2500) {
+    if (world_kind != WORLD_CITY && (fabsf(f.x) > 2500 || fabsf(f.z) > 2500)) {
         Vector3 d = { roundf(f.x / 256) * 256, 0, roundf(f.z / 256) * 256 };
         world_rebase(d);
     }
@@ -276,9 +279,26 @@ static void frame(void)
     now.hit = now.held & ~last_held;
     last_held = now.held;
     hud_input(&now);
+    if (demo_active && ui_screen == UI_LOOT) {
+        loot_take_all();
+        ui_screen = UI_NONE;
+        loot_ci = -1;
+    }
+    if (demo_active && (ui_screen == UI_CAR || ui_screen == UI_TRADE)) ui_screen = UI_NONE;
 
+    if (demo_active && mode == MODE_TITLE) demo_active = false;
+    if (want_demo) {
+        want_demo = false;
+        demo_active = true;
+        world_kind = next_world;
+        new_game((uint32_t)time(NULL) ^ (uint32_t)(GetTime() * 1000003));
+        demo_reset();
+        start_play();
+        hud_big("Autoplay demo", 3);
+    }
     if (want_new_game) {
         want_new_game = false;
+        demo_active = false;
         world_kind = next_world;
         new_game((uint32_t)time(NULL) ^ (uint32_t)(GetTime() * 1000003));
         start_play();
@@ -287,6 +307,7 @@ static void frame(void)
     }
     if (want_continue) {
         want_continue = false;
+        demo_active = false;
         WorldKind previous = world_kind;
         world_kind = next_world;
         if (game_load()) start_play();
@@ -311,18 +332,20 @@ static void frame(void)
             audio_tick(0);
         }
         while (acc >= DT && ui_screen == UI_NONE) {
-            tick(&pending);
+            Input bot = demo_active && mode == MODE_PLAY ? demo_control() : pending;
+            tick(&bot);
             pending.lx = pending.ly = 0;
             pending.hit = 0;
             acc -= DT;
         }
         if (mode == MODE_DEAD && !dead_handled) {
             dead_handled = true;
-            game_delete_save();
+            if (demo_active) { want_demo = true; next_world = world_kind; }
+            else game_delete_save();
             int best = 0;
             char *t = plat_get("best_km");
             if (t) { best = atoi(t); free(t); }
-            if ((int)(sv.km * 10) > best) { char b[32]; snprintf(b, sizeof b, "%d", (int)(sv.km * 10)); plat_put("best_km", b); }
+            if (!demo_active && (int)(sv.km * 10) > best) { char b[32]; snprintf(b, sizeof b, "%d", (int)(sv.km * 10)); plat_put("best_km", b); }
         }
         // the mouse is captured while driving or walking, freed in menus
         bool want_cursor = paused || mode == MODE_DEAD || is_touch_device();
@@ -379,11 +402,6 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--ui")) { t_ui = v; i++; }
         else if (!strcmp(a, "--touch")) t_touch = true;
     }
-#if defined(PLATFORM_ANDROID)
-    quality = 0;
-#elif defined(PLATFORM_WEB)
-    quality = is_touch_device() ? 0 : 1;
-#endif
     settings_load();
     if (t_quality >= 0) quality = t_quality;
     unsigned flags = FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT;
@@ -449,6 +467,11 @@ int main(int argc, char **argv)
                         in.my = car_kmh(c) < 70 ? 1 : 0.2f;
                         (void)off;
                     }
+                } else if (!strcmp(script, "demo")) {
+                    demo_active = true;
+                    if (f == 0) demo_reset();
+                    if (ui_screen == UI_LOOT) { loot_take_all(); ui_screen = UI_NONE; loot_ci = -1; }
+                    in = demo_control();
                 } else if (!strcmp(script, "walk")) {
                     in.my = f > 60 ? 0.8f : 0;
                 }

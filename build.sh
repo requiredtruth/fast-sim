@@ -121,10 +121,24 @@ build_android() {
     (cd "$work" && zip -qr0 unsigned.apk lib)
     "$bt/zipalign" -f -P 16 4 "$work/unsigned.apk" "$work/aligned.apk"
     local ks="${LONGROAD_KEYSTORE:-build/debug.p12}" pass="${LONGROAD_KEYSTORE_PASSWORD:-android}"
-    [[ -f "$ks" ]] || keytool -genkeypair -keystore "$ks" -storetype pkcs12 -storepass "$pass" -keypass "$pass" -alias longroad \
-        -dname 'CN=Long Road' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null
+    local recovery_dir=""
+    # Bootstrap the release key once. The only published backup is encrypted to the owner's recipient.
+    if [[ "${GITHUB_ACTIONS:-}" == true && "$VERSION" == 2.2.0 && -z "${LONGROAD_KEYSTORE:-}" ]]; then
+        recovery_dir="$(mktemp -d)"
+        ks="$recovery_dir/LongRoad.p12"
+        pass="$(openssl rand -hex 32)"
+        (umask 077 && printf '%s' "$pass" > "$recovery_dir/password.txt")
+    fi
+    [[ -f "$ks" ]] || LR_PASS="$pass" keytool -genkeypair -keystore "$ks" -storetype pkcs12 -storepass:env LR_PASS -keypass:env LR_PASS -alias longroad \
+        -dname 'CN=Long Road' -keyalg RSA -keysize 3072 -validity 10000 >/dev/null
     LR_PASS="$pass" "$bt/apksigner" sign --ks "$ks" --ks-key-alias longroad --ks-pass env:LR_PASS --out "$OUT/LongRoad.apk" "$work/aligned.apk"
     "$bt/apksigner" verify "$OUT/LongRoad.apk"
+    if [[ -n "$recovery_dir" ]]; then
+        tar -C "$recovery_dir" -czf - LongRoad.p12 password.txt | openssl cms -encrypt -binary -aes-256-gcm -outform DER \
+            -out "$OUT/LongRoad-signing-recovery.cms" -recip android/signing-recovery-recipient.pem \
+            -keyopt rsa_padding_mode:oaep -keyopt rsa_oaep_md:sha256
+        rm -rf -- "$recovery_dir"
+    fi
     rm -f "$OUT"/*.idsig
     echo "android: $(stat -c %s "$OUT/LongRoad.apk") bytes"
 }

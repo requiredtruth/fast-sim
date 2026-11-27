@@ -43,6 +43,25 @@ void texture_build(int ts);
 void world_cull(Matrix vp, Vector3 center, float radius);
 void world_draw_part(int part);
 void world_frame(void);
+void city_build(uint32_t seed);
+void city_release(void);
+void city_tick(float dt);
+void city_frame(void);
+void city_cull(Matrix vp, Vector3 center, float radius);
+void city_draw_part(int part);
+int city_lamps(Vector3 near, Vector4 *out, int max);
+Vector3 city_start(Vector3 *direction);
+bool city_shop_door(int container, Vector3 *p);
+float city_ground_y(float x, float z);
+bool city_is_water(float x, float z);
+bool city_on_road(float x, float z);
+bool city_push(Vector3 *p, float radius, float height);
+int city_boxes(Vector3 c, float r, BoundingBox *out, int max);
+bool city_ray(Vector3 o, Vector3 dir, float maxd, Hit *h);
+int city_nearest_lane(Vector3 p, float maxd);
+int city_nearest_walk(Vector3 p, float maxd);
+int city_light_state(int light);
+bool city_walk_light_ok(int light);
 int  world_lamps(Vector3 near, Vector4 *out, int max);
 
 typedef struct { Vector3 c; float hx, hz, y0, y1; Vector3 ax, az; } WBox;   // oriented box: ax, az unit, horizontal
