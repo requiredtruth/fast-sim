@@ -2369,18 +2369,12 @@ static bool chunk_visible(const Chunk *c)
 
 void city_draw_part(int part)
 {
-    static GLsizei counts[CHN * CHN];
-    static const void *offs[CHN * CHN];
-    int n = 0;
+    glBindVertexArray(vaos[part]);
     for (int c = 0; c < CHN * CHN; c++) {
         if (!chunks[c].count[part] || !chunk_visible(&chunks[c])) continue;
-        counts[n] = chunks[c].count[part];
-        offs[n] = (const void *)((uintptr_t)chunks[c].first[part] * 4);
-        n++;
+        const void *offset = (const void *)((uintptr_t)chunks[c].first[part] * sizeof(uint32_t));
+        glDrawElements(GL_TRIANGLES, chunks[c].count[part], GL_UNSIGNED_INT, offset);
     }
-    if (!n) return;
-    glBindVertexArray(vaos[part]);
-    glMultiDrawElements(GL_TRIANGLES, counts, GL_UNSIGNED_INT, offs, n);
     glBindVertexArray(0);
 }
 
@@ -2395,7 +2389,7 @@ void city_release(void)
     glDeleteBuffers(GEO_PARTS, vbos);
     glDeleteBuffers(GEO_PARTS, ebos);
     free(boxes); boxes = NULL; nbox = 0; cbox = 0;
-    free(walk); walk = NULL; nwalk = 0;
+    free(walk); walk = NULL; nwalk = nwalk_cap = 0;
     free(shops); shops = NULL; nshops = 0;
     free(mark); mark = NULL; mark_stamp = 0;
     free(box_start); free(box_items);
@@ -2404,6 +2398,7 @@ void city_release(void)
     memset(bufs, 0, sizeof bufs);
     nlamp = 0;
     rob_count = 0;
+    memset(rob_block, 0, sizeof rob_block);
     bseed_counter = clock_s = 0;
     built = false;
 }
