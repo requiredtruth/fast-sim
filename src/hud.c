@@ -858,7 +858,7 @@ static void pack_screen(void)
     details(d, it, sel_slot >= 0 ? pack[sel_slot].n : 0);
     if (it >= 0) {
         float bw = (d.width - 40 * S) / 3, by = d.y + d.height - 56 * S;
-        bool usable = wardrobe_item(it) || (items[it].effect != E_NONE && items[it].effect != E_WEAPON);
+        bool usable = garden_item(it) || wardrobe_item(it) || (items[it].effect != E_NONE && items[it].effect != E_WEAPON);
         if (!strcmp(items[it].id, "wood") || !strcmp(items[it].id, "rod")) usable = true;
         if (button(rect(d.x + 10 * S, by, bw, 44 * S), items[it].effect == E_LIGHT && items[it].value <= 1 ? (sv.torch_on ? "LIGHT OFF" : "LIGHT ON") : wardrobe_item(it) ? "EQUIP/REMOVE" : "USE", usable))
             item_use(it);

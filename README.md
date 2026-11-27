@@ -20,9 +20,9 @@ Long Road is a fork of [Out on Parole](https://github.com/shaydex-codes/outonpar
 
 Craft timber parts or a soil plot, then use **Pack → Place One in World**. Rotate and aim at the ground before placing a part. Fit a door into a crafted doorway. Aim at a door and use **Use** to swing it. Aim at a placed part and press **X** or tap **Reclaim** to recover it. Use **Z** or **Paint** to cycle timber finishes.
 
-Place a soil plot, aim at it and use **Use** to plant a bean seed, water it with a bottle, and later harvest. Water the plant again for another crop.
+Place a soil plot kit or use a hoe or trowel to till dry ground away from roads. Aim at a plot, then use a seed packet from the pack to choose a crop. **Use** plants an available seed if the plot is empty, waters a planted plot with a bottle, and harvests ripe produce. Compost accelerates watered crops. You can reclaim the plot to restore the ground.
 
-Choose **Male** or **Female** in Settings. Select a dress, leather jacket, or cowboy hat in the pack to equip it. Activating that same garment again takes it off.
+Choose **Male** or **Female** in Settings. Select one of 20 dress styles, 20 hats, or the leather jacket in the pack to equip it. Activating that same garment again takes it off.
 
 **Ambience** and **Engine and Tires** are independent settings. See [To Do.md](To%20Do.md) for the editable-building and sandbox roadmap.
 
@@ -160,6 +160,12 @@ The sound bank is packed from `assets/sfx` with `tools/pack_sfx.py`, which needs
 - Sounds from Out on Parole: Kenney and OpenGameArt (Tabasco / Vincent Sevedge, kurt, rubberduck, StarNinjas, Joth, TinyWorlds, Till Behrend, Nocturnal_Vanguard, WuxiaScrub), CC0. Engines, wind and rain are synthesized.
 - [raylib](https://www.raylib.com) by Ramon Santamaria and contributors, zlib licence.
 
+
+## Android test builds
+
+To package only Android while leaving the current release tag alone, run
+`LONGROAD_BUILD_VERSION=2.3.0 bash build.sh android` with a configured SDK, NDK, and release keystore.
+The signed package is written to `dist/LongRoad.apk`.
 
 ## Android release signing
 

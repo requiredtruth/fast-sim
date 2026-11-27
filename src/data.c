@@ -125,12 +125,35 @@ static const char *BASE =
 "item id=wood_door name=\"Timber door\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=805020 loot=crate:1\n"
 "item id=roof_panel name=\"Timber roof panel\" kind=mat weight=0.7 stack=8 price=8 icon=plank color=a06848 loot=crate:1\n"
 "item id=soil_plot name=\"Soil plot kit\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=65482f loot=crate:2\n"
-"item id=bean_seed name=\"Bean seed packet\" kind=mat weight=0.7 stack=8 price=8 icon=box color=5e8736 loot=crate:3,shelf:2\n"
-"item id=leather_jacket name=\"Leather jacket\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=583122 loot=locker:3\n"
-"item id=rose_dress name=\"Rose dress\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=da4a85 loot=locker:3\n"
-"item id=blue_dress name=\"Blue dress\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=4284cd loot=locker:3\n"
-"item id=cowboy_hat name=\"Cowboy hat\" kind=mat weight=0.7 stack=8 price=8 icon=bag color=936536 loot=locker:3,desk:1\n"
-"item id=garden_beans name=\"Garden beans\" kind=food eat=16 water=5 weight=0.2 stack=12 price=5 icon=leaf color=548738\n"
+#define GARMENT(id, name, color, group, style) "item id=" #id " name=\"" name "\" kind=gear weight=.45 stack=1 price=12 icon=bag color=" #color " loot=locker:2,crate:1\n"
+#define CROP(seed, crop, name, color, style, days) \
+    "item id=" #seed " name=\"" name " seeds\" kind=mat weight=.04 stack=20 price=3 icon=box color=" #color " loot=crate:2,shelf:1\n" \
+    "item id=" #crop " name=\"" name "\" kind=" CROP_KIND_##style " weight=.2 stack=12 price=5 icon=leaf color=" #color "\n"
+#define CAR_PART(id, name, effect, shape) "item id=" #id " name=\"" name "\" kind=part " effect " weight=1.2 stack=4 price=18 icon=gear color=84939b loot=toolbox:2,trunk:1\n"
+#define CROP_KIND_0 "food eat=14 water=4"
+#define CROP_KIND_1 "food eat=14 water=4"
+#define CROP_KIND_2 "food eat=14 water=4"
+#define CROP_KIND_3 "food eat=14 water=4"
+#define CROP_KIND_4 "food eat=14 water=4"
+#define CROP_KIND_5 "food eat=14 water=4"
+#define CROP_KIND_6 "food eat=14 water=4"
+#define CROP_KIND_7 "food eat=14 water=4"
+#define CROP_KIND_8 "food eat=14 water=4"
+#define CROP_KIND_9 "food eat=14 water=4"
+#define CROP_KIND_10 "food eat=14 water=4"
+#define CROP_KIND_11 "food eat=14 water=4"
+#define CROP_KIND_12 "food eat=14 water=4"
+#define CROP_KIND_13 "food eat=14 water=4"
+#define CROP_KIND_14 "food eat=14 water=4"
+#define CROP_KIND_15 "trade"
+#include "catalog.def"
+#undef GARMENT
+#undef CROP
+#undef CAR_PART
+"item id=garden_hoe name=\"Garden hoe\" kind=tool weight=1.5 stack=1 price=15 icon=wrench color=857752 loot=toolbox:2,crate:3 desc=\"Use on dry ground to till a garden patch.\"\n"
+"item id=watering_can name=\"Watering can\" kind=tool weight=.5 stack=1 price=9 icon=jerry color=71968b loot=crate:3 desc=\"Water a planted plot with a bottle from the pack.\"\n"
+"item id=compost name=\"Garden compost\" kind=mat weight=.4 stack=8 price=5 icon=bag color=735039 loot=crate:2 desc=\"Speeds up the growth of a watered plant.\"\n"
+"item id=hand_trowel name=\"Hand trowel\" kind=tool weight=.4 stack=1 price=8 icon=wrench color=737468 loot=toolbox:3,crate:2 desc=\"Use on dry ground to till a garden patch.\"\n"
 "# ---- crafting\n"
 "recipe id=bandages out=bandage:2 in=rags:2\n"
 "recipe id=boil_water out=water:1 in=dirty_water:1 fire=1\n"
@@ -156,8 +179,12 @@ static const char *BASE =
 "recipe id=wood_door out=wood_door:1 in=wood:2\n"
 "recipe id=roof_panel out=roof_panel:1 in=wood:2\n"
 "recipe id=soil_plot out=soil_plot:1 in=wood:1,rags:1\n"
+"recipe id=garden_hoe out=garden_hoe:1 in=wood:1,scrap:1\n"
+"recipe id=watering_can out=watering_can:1 in=metal_sheet:1,tape:1\n"
+"recipe id=compost out=compost:2 in=garden_beans:1,wood:1\n"
+"recipe id=hand_trowel out=hand_trowel:1 in=wood:1,scrap:1\n"
 "# ---- starting kit\n"
-"start item=water:2 item=beans:2 item=bandage:2 item=lighter:1 item=gas_empty:1 item=siphon:1 item=jack:1 item=cash:30 item=pipe:1 item=rags:2 item=soil_plot:1 item=bean_seed:2 item=wood:6\n";
+"start item=water:2 item=beans:2 item=bandage:2 item=lighter:1 item=gas_empty:1 item=siphon:1 item=jack:1 item=cash:30 item=pipe:1 item=rags:2 item=soil_plot:1 item=bean_seed:2 item=wood:6 item=garden_hoe:1 item=carrot_seed:2\n";
 
 // the example a player sees in the mods folder, disabled until they turn it on
 const char *EXAMPLE_MOD =

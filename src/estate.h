@@ -3,7 +3,18 @@
 #include "city.h"
 
 extern bool ambience_enabled, vehicle_audio_enabled, female_avatar;
-extern Mesh estate_cube, wardrobe_mesh[3];
+extern Mesh estate_cube, garden_tool_mesh[4];
+enum { GARMENT_JACKET, GARMENT_DRESS, GARMENT_HAT };
+typedef struct { const char *id; unsigned color; int group, style; Mesh worn, placed; } Garment;
+typedef struct { const char *seed, *id, *name; unsigned color; float days; Mesh mesh; } Crop;
+typedef struct { const char *id; int shape; Mesh mesh; } CarPart;
+extern Garment garments[];
+extern Crop crops[];
+extern CarPart repair_parts[];
+extern const int garment_count, crop_count, repair_part_count;
+Mesh catalog_item_mesh(int item);
+bool garden_item(int item);
+bool garden_use(int item);
 void estate_reset(void);
 bool estate_place(int item, Vector3 p, float yaw);
 bool estate_piece(int item);

@@ -2,6 +2,17 @@
 
 > **Feature retention rule. Existing features must never be removed, disabled, or hidden without the repository owner's express permission. Backward compatibility is a separate decision for the stable version.**
 
+## Major goals
+
+- [x] Give inventory items procedural 3D world meshes. Items without a specialized mesh use their existing family mesh, including items added through mods.
+- [x] Ship 20 dress styles and 20 hat styles with distinct procedural silhouettes and wearable and placed forms.
+- [x] Expand the drivable-car repair catalog across engine, electrical, cooling, wheels and armor. Give the new parts procedural world meshes.
+- [x] Add procedural garden tools, 16 crops, planting, watering, compost and harvests. Convert dry open ground into garden land with a reusable hoe or trowel.
+- [ ] Expand specialized meshes to remaining shared shapes, including all containers, individual hardware, seeds and fasteners.
+- [ ] Expand the vehicle simulation to swappable drivetrain, suspension, bodywork, brake and electrical components with their own condition and fitment.
+- [ ] Expand cultivation with continuous tilling, plant rotation, irrigation, seasonal yields, orchard fruit, and trade recipes.
+- [ ] Validate an APK on Android before releasing refreshed desktop and browser builds.
+
 ## First playable systems
 
 - [x] Separate ambience and vehicle audio controls. Reduce repetitive cabin noise and suppress unloaded or stalled engine loops.

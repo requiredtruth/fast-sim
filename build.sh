@@ -6,7 +6,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 ROOT="$PWD"
 RAYLIB="${RAYLIB:-$ROOT/deps/raylib}"
-VERSION="$(sed -n '1s/^v//p' RELEASE 2>/dev/null || echo 0.0.0)"
+VERSION="${LONGROAD_BUILD_VERSION:-$(sed -n '1s/^v//p' RELEASE 2>/dev/null || echo 0.0.0)}"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Expected a numeric build version such as 2.3.0"; exit 1; }
 OUT="$ROOT/dist"
 mkdir -p build "$OUT"
 

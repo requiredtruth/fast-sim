@@ -318,7 +318,7 @@ extern float threat;             // 0..1 how dangerous this stretch is
 
 // ---- survival (survive.c): the pack, stats, crafting, loot, saving
 
-#define MAX_ITEMS 160
+#define MAX_ITEMS 320
 #define MAX_RECIPES 64
 #define PACK_SLOTS 24
 #define CARGO_SLOTS 40

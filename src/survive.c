@@ -152,6 +152,7 @@ bool item_use(int it)
 {
     if (it < 0 || it >= nitems || pack_count(it) <= 0) return false;
     if (wardrobe_item(it)) return wardrobe_equip(it);
+    if (garden_item(it)) return garden_use(it);
     Item *t = &items[it];
     Ped *p = &peds[PLAYER];
     bool used = true, consume = true;
@@ -512,7 +513,10 @@ static void placement_confirm(void)
     if (slot->n <= 0) { placement_cancel(); return; }
     if (!placement_target(&p)) { hud_msg("Aim at dry ground or a flat surface in reach", 2); return; }
     if (estate_piece(slot->item)) {
-        if (estate_place(slot->item,p,place_yaw)) { slot->n--; placement_cancel(); }
+        if (estate_place(slot->item,p,place_yaw)) {
+            if (slot->item!=item_find("garden_hoe") && slot->item!=item_find("hand_trowel")) slot->n--;
+            placement_cancel();
+        }
         else hud_msg("Part will not fit here",2);
         return;
     }
@@ -993,7 +997,7 @@ static void item_draw(int item, Vector3 pos, float angle, bool preview)
     if (it->kind == IK_WEAPON && it->weapon > W_FIST && it->weapon < W_COUNT) {
         at = MatrixMultiply(MatrixTranslate(0, .19f, 0), at);
         draw_mesh(gun_mesh[it->weapon], at, preview ? tint : WHITE, MAT_PROP);
-    } else draw_mesh(item_mesh[it->icon], at, tint, MAT_PROP);
+    } else draw_mesh(catalog_item_mesh(item), at, tint, MAT_PROP);
 }
 
 void survive_draw(int pass)

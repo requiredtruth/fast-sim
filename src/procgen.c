@@ -1251,21 +1251,200 @@ static void build_clips(void)
     make_clip(A_CROUCH_WALK, 28, true, c_crouch_walk);
 }
 
+typedef struct { float hem, waist, flare, middle, sleeve; int trim; } DressShape;
+static const DressShape dress_shapes[20]={
+    {.58,1.07,.25,.20,.07,1},{.77,1.06,.19,.16,.05,0},{.39,1.09,.24,.19,.20,2},
+    {.68,1.08,.14,.27,.10,0},{.46,1.06,.31,.23,.07,2},{.68,1.12,.23,.17,0,1},
+    {.65,1.10,.22,.17,.08,3},{.61,1.05,.22,.15,.13,4},{.43,1.26,.24,.19,.08,1},
+    {.74,1.08,.17,.14,.10,5},{.32,1.10,.26,.18,0,4},{.62,1.10,.28,.18,.105,1},
+    {.71,1.07,.19,.17,0,3},{.30,1.11,.32,.14,.06,0},{.78,1.12,.17,.175,.16,0},
+    {.70,1.08,.26,.20,.145,4},{.49,1.06,.32,.18,.02,2},{.37,1.11,.39,.28,.11,5},
+    {.67,1.05,.21,.18,.175,3},{.49,1.12,.23,.20,.24,4}
+};
+typedef struct { float brim, crown, high, taper, bill; int shape; } HatShape;
+static const HatShape hats[20]={
+    {.199,.105,.11,.78,0,1},{.218,.108,.08,.85,0,1},{.154,.108,.125,.76,0,2},
+    {.143,.108,.105,.46,0,3},{.146,.102,.182,1.02,0,2},{.243,.106,.071,.74,0,0},
+    {.18,.108,.085,1,0,2},{.154,.107,.105,.92,0,4},{.13,.105,.13,.60,0,4},
+    {0,.102,.094,.53,0,3},{0,.105,.124,.54,0,5},{0,.129,.048,.84,0,6},
+    {0,.108,.04,.56,.062,6},{0,.105,.092,.55,.09,3},{0,.11,.105,.84,.09,2},
+    {0,.104,.028,1,.12,2},{.126,.111,.102,.71,.038,3},{.176,.114,.084,.76,.04,4},
+    {.112,.102,.192,1.33,0,5},{.193,.11,.096,.73,0,7}
+};
+
+static void garment_geometry(MB *m,const Garment *g)
+{
+    int region=g->group==GARMENT_HAT?R_HAIR:R_SHIRT;
+    RGBA fabric=m->skin?reg(region):rgba(0xf4f4f4,0);
+    RGBA trim=m->skin?reg(R_SHOES):rgba(0x999999,0);
+    if(g->group==GARMENT_HAT){
+        const HatShape *s=&hats[g->style];
+        skin_to(B_HEAD,B_HEAD,0);
+        float y=1.78f;
+        if(s->brim){
+            if(s->shape==1 || s->shape==7){
+                int corners=s->shape==7?6:16;
+                for(int i=0;i<corners;i++){
+                    float a=i*2*PI/corners,b=(i+1)*2*PI/corners;
+                    float h0=s->shape==7?.044f*(i%2==0):.042f*cosf(a)*cosf(a);
+                    float h1=s->shape==7?.044f*((i+1)%2==0):.042f*cosf(b)*cosf(b);
+                    mb_quad(m,V3(cosf(a)*s->crown,y,sinf(a)*s->crown),V3(cosf(a)*s->brim,y+h0,sinf(a)*s->brim),
+                            V3(cosf(b)*s->brim,y+h1,sinf(b)*s->brim),V3(cosf(b)*s->crown,y,sinf(b)*s->crown),fabric,V3(0,y-.2f,0));
+                }
+            } else mb_cyl(m,V3(0,y-.018f,0),V3(0,y+.008f,0),s->brim,s->shape==4?s->crown:s->brim,18,fabric,trim,true);
+        }
+        if(s->shape==3 || s->shape==5 || s->shape==6)
+            mb_ellipsoid(m,V3(0,y+s->high*.29f,.005f),V3(s->crown,s->high*.72f,s->crown*1.06f),14,7,fabric);
+        else mb_cyl(m,V3(0,y,0),V3(0,y+s->high,0),s->crown,s->crown*s->taper,16,fabric,fabric,true);
+        if(s->shape!=6) mb_cyl(m,V3(0,y+.012f,0),V3(0,y+.025f,0),s->crown*1.015f,s->crown*1.012f,16,trim,trim,true);
+        if(s->bill) mb_ellipsoid(m,V3(0,y-.012f,.081f+s->bill*.45f),V3(.102f,.020f,s->bill),14,6,fabric);
+        if(s->shape==5) mb_ellipsoid(m,V3(0,y+s->high+.028f,0),V3(.037f,.039f,.037f),10,6,trim);
+        return;
+    }
+    if(g->group==GARMENT_JACKET){
+        skin_to(B_CHEST,B_SP2,.25f);
+        mb_ellipsoid(m,V3(0,1.30f,0),V3(.204f,.226f,.123f),16,10,fabric);
+        mb_box(m,V3(-.012f,1.12f,.112f),V3(.012f,1.49f,.132f),trim);
+        return;
+    }
+    const DressShape *s=&dress_shapes[g->style];
+    float mid=s->hem+(s->waist-s->hem)*.53f;
+    skin_to(B_PELVIS,B_PELVIS,0);
+    mb_cyl(m,V3(0,s->hem,0),V3(0,mid,0),s->flare,s->middle,20,fabric,trim,true);
+    mb_cyl(m,V3(0,mid,0),V3(0,s->waist,0),s->middle,.146f,20,fabric,fabric,true);
+    skin_to(B_CHEST,B_SP2,.24f);
+    mb_ellipsoid(m,V3(0,(s->waist+1.50f)*.5f,0),V3(.177f,(1.52f-s->waist)*.53f,.128f),16,8,fabric);
+    if(s->sleeve>0) for(int side=-1;side<=1;side+=2){
+        int bone=side>0?B_ARM_L:B_ARM_R;
+        skin_to(bone,bone,0);
+        mb_cyl(m,V3(side*.163f,1.47f,0),V3(side*.204f,1.47f-s->sleeve,0),.068f,.052f,10,fabric,trim,true);
+    }
+    skin_to(B_PELVIS,B_PELVIS,0);
+    if(s->trim==1 || s->trim==4)
+        mb_cyl(m,V3(0,s->waist-.035f,0),V3(0,s->waist-.008f,0),.155f,.153f,20,trim,trim,true);
+    if(s->trim==2 || s->trim==5)
+        for(int j=0;j<(s->trim==2?3:1);j++){
+            float t=.25f+j*.23f,h=Lerp(s->hem,s->waist,t),r=Lerp(s->flare,.146f,t)+.019f;
+            mb_cyl(m,V3(0,h,0),V3(0,h+.072f,0),r,r-.027f,18,fabric,trim,true);
+        }
+    if(s->trim==3){
+        skin_to(B_CHEST,B_SP2,.24f);
+        mb_box(m,V3(-.08f,1.13f,.118f),V3(.08f,1.41f,.138f),trim);
+    }
+}
+
+static Mesh crop_mesh(int style)
+{
+    MB m={0}; RGBA v=rgba(0xf5f5e0,0),leaf=rgba(0x729451,0);
+    if(style==1 || style==8 || style==10){
+        mb_cyl(&m,V3(0,.012f,0),V3(0,.23f,0),.012f,style==1?.055f:.074f,12,v,v,true);
+        for(int j=-1;j<=1;j++)mb_ellipsoid(&m,V3(j*.036f,.251f,0),V3(.029f,.053f,.014f),8,5,leaf);
+    } else if(style==4 || style==13 || style==0){
+        Vector3 r=style==0?V3(.031f,.035f,.155f):V3(.055f,.062f,.14f);
+        mb_ellipsoid(&m,V3(0,.061f,0),r,14,8,v);
+        if(style==4) for(int i=0;i<8;i++) mb_ellipsoid(&m,V3(0,.113f,i*.022f-.077f),V3(.031f,.018f,.016f),7,5,v);
+    } else if(style==7 || style==11 || style==15){
+        for(int j=0;j<(style==15?8:6);j++){
+            float a=j*2*PI/8;
+            mb_ellipsoid(&m,V3(.074f*cosf(a),.076f,.074f*sinf(a)),V3(.064f,.038f,.055f),8,5,style==15?v:leaf);
+        }
+        mb_ellipsoid(&m,V3(0,.095f,0),V3(.064f,.057f,.064f),10,6,v);
+    } else {
+        float r=style==9?.15f:style==12?.047f:.079f;
+        int lobes=style==9?8:style==5||style==14?4:1;
+        for(int j=0;j<lobes;j++){
+            float a=j*2*PI/lobes,d=lobes==1?0:r*.40f;
+            mb_ellipsoid(&m,V3(cosf(a)*d,r*.76f,sinf(a)*d),V3(r*.83f,r*.76f,r*.78f),12,7,v);
+        }
+        if(style!=2)mb_cyl(&m,V3(0,r*1.42f,0),V3(.019f,r*1.81f,0),.013f,.01f,8,leaf,leaf,true);
+    }
+    return mb_upload(&m);
+}
+
+static Mesh repair_mesh(int style)
+{
+    MB m={0}; RGBA steel=rgba(0xf1f1f1,175),dark=rgba(0x54545a,0),cap=rgba(0xa5a5a5,120);
+    if(style==4 || style==8 || style==15 || style==18 || style==19){
+        float radius=style==4?.143f:style==18?.202f:.168f;
+        int spokes=style==19?5:style==4||style==18?12:6;
+        for(int j=0;j<spokes;j++){
+            float a=j*2*PI/spokes,b=(j+1)*2*PI/spokes;
+            Vector3 u=V3(cosf(a)*radius,.033f,sinf(a)*radius), v=V3(cosf(b)*radius,.033f,sinf(b)*radius);
+            if(style!=19) mb_cyl(&m,u,v,style==18?.029f:.019f,.018f,7,style==4||style==18?dark:steel,cap,true);
+            if(style==8||style==15||style==19)mb_cyl(&m,V3(0,.042f,0),u,.023f,.026f,6,steel,cap,true);
+        }
+        if(style!=4 && style!=18)mb_cyl(&m,V3(0,.005f,0),V3(0,.089f,0),.058f,.058f,12,cap,steel,true);
+    } else if(style==5 || style==9 || style==11 || style==16 || style==22){
+        mb_box(&m,V3(-.15f,0,-.085f),V3(.15f,.14f,.085f),style==16?dark:steel);
+        for(int j=0;j<9;j++){
+            float x=-.13f+j*.032f;
+            mb_box(&m,V3(x,.141f,-.081f),V3(x+.011f,.159f,.081f),dark);
+        }
+        if(style==9)for(int j=-1;j<=1;j+=2)mb_cyl(&m,V3(j*.125f,.11f,.04f),V3(j*.125f,.23f,.04f),.024f,.021f,8,steel,cap,true);
+    } else if(style==14 || style==20){
+        int n=style==20?2:1;
+        for(int c=0;c<n;c++)for(int j=0;j<9;j++){
+            float a=j*.31f,b=(j+1)*.31f,r=.10f+c*.05f;
+            mb_cyl(&m,V3(cosf(a)*r,.04f,sinf(a)*r),V3(cosf(b)*r,.04f,sinf(b)*r),.016f,.016f,7,dark,cap,true);
+        }
+    } else {
+        int n=style==12?4:style==13?2:style==21?3:1;
+        for(int j=0;j<n;j++){
+            float x=(j-(n-1)*.5f)*.075f, r=n>1?.023f:.066f;
+            float h=style==17?.26f:.075f+(style%6)*.022f;
+            mb_cyl(&m,V3(x,.008f,0),V3(x,h,0),r,r,12,style==17?dark:steel,cap,true);
+            mb_cyl(&m,V3(x,h,0),V3(x,h+.047f,0),r*.65f,r*.47f,8,dark,steel,true);
+            if(style<4) mb_box(&m,V3(-.092f,.015f,-.080f),V3(.093f,.056f,.080f),cap);
+        }
+    }
+    return mb_upload(&m);
+}
+
+static Mesh garden_tool(int k)
+{
+    MB m={0};
+    RGBA metal=rgba(0xdadada,150), wood=rgba(0xa99673,0), plastic=rgba(0xf5f5f5,0);
+    if(k==0 || k==3){
+        float length=k==0?.46f:.24f;
+        mb_cyl(&m,V3(0,.025f,-length),V3(0,.042f,.075f),.019f,.015f,9,wood,metal,true);
+        mb_box(&m,V3(-.074f,.014f,.06f),V3(.074f,.035f,.137f),metal);
+        if(k==0)mb_box(&m,V3(-.074f,.031f,.114f),V3(.074f,.094f,.137f),metal);
+        else mb_ellipsoid(&m,V3(0,.023f,.15f),V3(.063f,.014f,.092f),11,6,metal);
+    }else if(k==1){
+        mb_cyl(&m,V3(0,0,0),V3(0,.214f,0),.104f,.087f,16,plastic,metal,true);
+        mb_cyl(&m,V3(.08f,.10f,0),V3(.254f,.226f,0),.027f,.018f,10,plastic,metal,true);
+        mb_cyl(&m,V3(.24f,.216f,0),V3(.274f,.244f,0),.034f,.034f,10,metal,metal,true);
+        for(int i=0;i<8;i++){
+            float a=i*PI/8,b=(i+1)*PI/8;
+            mb_cyl(&m,V3(-.058f-.091f*sinf(a),.112f-.077f*cosf(a),0),V3(-.058f-.091f*sinf(b),.112f-.077f*cosf(b),0),.018f,.018f,7,plastic,plastic,true);
+        }
+    }else{
+        mb_ellipsoid(&m,V3(0,.095f,0),V3(.14f,.095f,.107f),13,8,wood);
+        mb_cyl(&m,V3(0,.168f,0),V3(0,.212f,0),.061f,.039f,10,wood,plastic,true);
+    }
+    return mb_upload(&m);
+}
+
 static void sandbox_meshes(void)
 {
     MB m={0};
     mb_box(&m,V3(-.5f,-.5f,-.5f),V3(.5f,.5f,.5f),rgba(0xffffff,0));
     estate_cube=mb_upload(&m);
-    m=(MB){.skin=true}; skin_to(B_CHEST,B_SP2,.25f);
-    mb_ellipsoid(&m,V3(0,1.30f,0),V3(.198f,.226f,.118f),16,10,reg(R_SHIRT));
-    wardrobe_mesh[0]=mb_upload(&m);
-    m=(MB){.skin=true}; skin_to(B_PELVIS,B_PELVIS,0);
-    mb_cyl(&m,V3(0,.63f,0),V3(0,1.09f,0),.245f,.142f,18,reg(R_SHIRT),reg(R_SHIRT),true);
-    wardrobe_mesh[1]=mb_upload(&m);
-    m=(MB){.skin=true}; skin_to(B_HEAD,B_HEAD,0);
-    mb_cyl(&m,V3(0,1.78f,0),V3(0,1.81f,0),.195f,.185f,18,reg(R_HAIR),reg(R_HAIR),true);
-    mb_cyl(&m,V3(0,1.8f,0),V3(0,1.92f,0),.107f,.081f,12,reg(R_HAIR),reg(R_HAIR),true);
-    wardrobe_mesh[2]=mb_upload(&m);
+    for(int i=0;i<garment_count;i++){
+        Garment *g=&garments[i];
+        m=(MB){.skin=true}; garment_geometry(&m,g); g->worn=mb_upload(&m);
+        m=(MB){0}; garment_geometry(&m,g);
+        float bottom=1e9f;
+        for(int j=0;j<m.nv;j++) bottom=fminf(bottom,m.v[3*j+1]);
+        float scale=g->group==GARMENT_HAT?.84f:.42f;
+        for(int j=0;j<m.nv;j++){
+            m.v[3*j]*=scale; m.v[3*j+1]=(m.v[3*j+1]-bottom)*scale; m.v[3*j+2]*=scale;
+        }
+        g->placed=mb_upload(&m);
+    }
+    for(int i=0;i<4;i++)garden_tool_mesh[i]=garden_tool(i);
+    for(int i=0;i<crop_count;i++)crops[i].mesh=crop_mesh(i);
+    for(int i=0;i<repair_part_count;i++)repair_parts[i].mesh=repair_mesh(repair_parts[i].shape);
 }
 
 void assets_load(void)
