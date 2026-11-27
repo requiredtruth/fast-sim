@@ -13,6 +13,21 @@ Long Road is a fork of [Out on Parole](https://github.com/shaydex-codes/outonpar
 | Windows x64 | `LongRoad-windows-x64.zip` | Unzip, run `LongRoad.exe`. |
 | Linux x64 | `LongRoad-linux-x64.tar.gz` | Extract, run `./LongRoad/longroad`. Needs X11 and OpenGL 3.3. |
 
+
+## Choose a world
+
+Open **Choose World** on the title screen. Each world keeps its own trip. Existing Long Road saves appear under **Long Road**.
+
+| World | Terrain and stops |
+| --- | --- |
+| Long Road | The original endless highway through mixed biomes |
+| Metro Grid | A procedural city with cross streets, storefronts, garages and a skyline |
+| Pine Country | Dense woodland, ranger stations, campsites and fishing ponds |
+| Frostline | Snowy mountain roads with frequent garages and motels |
+| Red Mesa | Red-rock badlands with wrecks and trading posts |
+
+Dropping an item places its 3D model at your feet. Ground caches stay in that world's save and can be picked up again through **Use**.
+
 ## Playing
 
 - Drive as far as you can. Stops appear every kilometre or two: gas stations, diners, motels, farms, garages, ranger stations, trading posts, campgrounds, small towns and pileups.

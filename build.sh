@@ -29,13 +29,16 @@ raylib_lib() { # target cc ar platform graphics extra...
     local dir="build/rl-$t"
     [[ -f "$dir/libraylib.a" ]] && return
     mkdir -p "$dir"
-    local mods=(rcore rshapes rtextures rtext rmodels utils)
+    local mods=(rcore rshapes rtextures rtext rmodels utils) pids=()
     [[ "$plat" == PLATFORM_DESKTOP_GLFW ]] && mods+=(rglfw)
     for m in "${mods[@]}"; do
         $cc -std=gnu11 -O2 -w -DNDEBUG -D$plat -D$gfx $FEATURES "$@" -I"$RAYLIB/src" -I"$RAYLIB/src/external/glfw/include" \
             -c "$RAYLIB/src/$m.c" -o "$dir/$m.o" &
+        pids+=("$!")
     done
-    wait
+    local failed=0
+    for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
+    (( failed == 0 )) || return 1
     $ar rcs "$dir/libraylib.a" "$dir"/*.o
 }
 
@@ -105,7 +108,7 @@ build_android() {
         $cc -O2 -w -fPIC -c "$glue/android_native_app_glue.c" -o "build/glue-$abi/glue.o"
         $cc "${GAMEFLAGS[@]}" -fPIC -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES3 -I"$glue" "${SRC[@]}" "build/glue-$abi/glue.o" \
             build/rl-android-$abi/libraylib.a -shared -o "$work/lib/$abi/libmain.so" \
-            -u ANativeActivity_onCreate -llog -landroid -lEGL -lGLESv3 -laaudio -lm -s
+            -Wl,-z,max-page-size=16384 -u ANativeActivity_onCreate -llog -landroid -lEGL -lGLESv3 -laaudio -lm -s
     done
     RAYLIB="$RAYLIB_SAVE"
     local code
@@ -116,7 +119,7 @@ build_android() {
     mkdir -p "$work/assets" && cp -r mods "$work/assets/" 2>/dev/null || true
     "$bt/aapt2" link -I "$plat" --manifest "$work/AndroidManifest.xml" -A "$work/assets" -o "$work/unsigned.apk" "$work/res.zip"
     (cd "$work" && zip -qr0 unsigned.apk lib)
-    "$bt/zipalign" -f -p 4 "$work/unsigned.apk" "$work/aligned.apk"
+    "$bt/zipalign" -f -P 16 4 "$work/unsigned.apk" "$work/aligned.apk"
     local ks="${LONGROAD_KEYSTORE:-build/debug.p12}" pass="${LONGROAD_KEYSTORE_PASSWORD:-android}"
     [[ -f "$ks" ]] || keytool -genkeypair -keystore "$ks" -storetype pkcs12 -storepass "$pass" -keypass "$pass" -alias longroad \
         -dname 'CN=Long Road' -keyalg RSA -keysize 2048 -validity 10000 >/dev/null

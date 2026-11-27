@@ -10,6 +10,7 @@ Mesh body_mesh[BODY_COUNT];
 Mesh hair_mesh[HAIR_COUNT];
 Mesh gun_mesh[W_COUNT];
 Mesh prop_mesh[PROP_COUNT];
+Mesh item_mesh[ICON_COUNT];
 Skeleton skel;
 Clip clips[A_COUNT];
 
@@ -727,6 +728,132 @@ static Mesh gun(int w)
     return mb_upload(&m);
 }
 
+static Mesh item_model(int icon)
+{
+    MB m = { 0 };
+    const RGBA body = rgba(0xf4f4f4, 0), seam = rgba(0x777777, 0);
+    const RGBA metal = rgba(0xd9d9d9, 185), rubber = rgba(0x454545, 0);
+    const RGBA glass = rgba(0xe9e9e9, 120);
+#define BOX(x0,y0,z0,x1,y1,z1,c) mb_box(&m, V3(x0,y0,z0), V3(x1,y1,z1), c)
+#define TUBE(x0,y0,z0,x1,y1,z1,r0,r1,c,cap) mb_cyl(&m, V3(x0,y0,z0), V3(x1,y1,z1), r0,r1,12,c,cap,true)
+    switch (icon) {
+    case ICON_CAN:
+        TUBE(0,0.01f,0,0,0.23f,0,.092f,.092f,body,metal);
+        for (int y = 0; y < 2; y++) {
+            float h = 0.01f + y * 0.218f;
+            TUBE(0,h,0,0,h+.012f,0,.098f,.098f,metal,metal);
+        }
+        BOX(-.025f,.235f,-.014f,.027f,.241f,.016f,seam);
+        break;
+    case ICON_BOTTLE:
+        TUBE(0,0,0,0,.24f,0,.073f,.073f,glass,glass);
+        TUBE(0,.24f,0,0,.30f,0,.073f,.031f,glass,glass);
+        TUBE(0,.30f,0,0,.34f,0,.032f,.034f,seam,metal);
+        TUBE(0,.08f,0,0,.17f,0,.076f,.076f,body,body);
+        break;
+    case ICON_CROSS:
+        BOX(-.16f,0,-.11f,.16f,.15f,.11f,body);
+        BOX(-.158f,.075f,-.112f,.158f,.093f,.112f,seam);
+        BOX(-.062f,.151f,-.018f,.062f,.158f,.018f,metal);
+        BOX(-.018f,.151f,-.058f,.018f,.158f,.058f,metal);
+        break;
+    case ICON_JERRY:
+        BOX(-.15f,0,-.09f,.15f,.31f,.09f,body);
+        BOX(-.105f,.31f,-.028f,-.065f,.375f,.028f,seam);
+        BOX(.045f,.31f,-.028f,.081f,.375f,.028f,seam);
+        BOX(-.105f,.361f,-.028f,.081f,.386f,.028f,body);
+        TUBE(.108f,.31f,.018f,.126f,.36f,.018f,.035f,.035f,metal,seam);
+        for (int i = 1; i <= 3; i++) BOX(-.105f,i*.072f,.09f,.105f,i*.072f+.014f,.099f,seam);
+        break;
+    case ICON_GEAR:
+        TUBE(0,.015f,0,0,.092f,0,.135f,.135f,metal,body);
+        TUBE(0,.092f,0,0,.112f,0,.052f,.052f,rubber,seam);
+        for (int i = 0; i < 8; i++) {
+            float a = i * PI / 4;
+            Vector3 x = V3(cosf(a), 0, sinf(a)), z = V3(-sinf(a), 0, cosf(a));
+            mb_obox(&m, V3(x.x*.142f,.052f,x.z*.142f), V3(.034f,.036f,.029f), x, V3(0,1,0), z, metal);
+        }
+        break;
+    case ICON_WRENCH: {
+        BOX(-.23f,.014f,-.029f,.19f,.067f,.029f,metal);
+        TUBE(-.205f,.012f,0,-.205f,.079f,0,.064f,.064f,metal,body);
+        BOX(.137f,.014f,-.073f,.22f,.075f,-.025f,metal);
+        BOX(.137f,.014f,.025f,.22f,.075f,.073f,metal);
+        break;
+    }
+    case ICON_BULLET:
+        for (int i = -1; i <= 1; i++) {
+            float x = i * .067f;
+            TUBE(x,.025f,-.075f,x,.025f,.065f,.025f,.025f,metal,metal);
+            TUBE(x,.025f,.065f,x,.025f,.108f,.025f,.009f,body,body);
+        }
+        break;
+    case ICON_BAG:
+        mb_ellipsoid(&m, V3(0,.13f,0), V3(.21f,.13f,.145f), 10, 6, body);
+        BOX(-.175f,.06f,.07f,.175f,.15f,.145f,seam);
+        BOX(-.025f,.061f,.145f,.025f,.137f,.152f,rubber);
+        break;
+    case ICON_PLANK:
+        for (int i = -1; i <= 1; i++) {
+            TUBE(i*.09f,.048f,-.21f,i*.09f,.048f,.21f,.048f,.045f,seam,body);
+        }
+        TUBE(0,.119f,-.185f,0,.119f,.185f,.047f,.046f,body,seam);
+        break;
+    case ICON_COIN:
+        for (int i = 0; i < 3; i++) {
+            float x = i * .085f;
+            TUBE(x,.005f,-x*.3f,x,.035f,-x*.3f,.066f,.066f,metal,body);
+        }
+        break;
+    case ICON_TIRE:
+        TUBE(0,.01f,0,0,.139f,0,.228f,.228f,rubber,rubber);
+        TUBE(0,.139f,0,0,.16f,0,.149f,.149f,metal,metal);
+        TUBE(0,.16f,0,0,.17f,0,.049f,.049f,seam,metal);
+        for (int i = 0; i < 16; i++) {
+            float a = i * PI / 8;
+            Vector3 x = V3(cosf(a), 0, sinf(a)), z = V3(-sinf(a), 0, cosf(a));
+            mb_obox(&m, V3(x.x*.222f,.075f,x.z*.222f), V3(.012f,.053f,.019f), x,V3(0,1,0),z,seam);
+        }
+        break;
+    case ICON_BATTERY:
+        BOX(-.145f,0,-.09f,.145f,.16f,.09f,body);
+        BOX(-.15f,.15f,-.095f,.15f,.19f,.095f,rubber);
+        for (int i = -1; i <= 1; i += 2) TUBE(i*.10f,.19f,0,i*.10f,.223f,0,.022f,.022f,metal,metal);
+        break;
+    case ICON_PILL:
+        TUBE(0,0,0,0,.145f,0,.058f,.058f,body,metal);
+        TUBE(0,.145f,0,0,.17f,0,.065f,.065f,seam,metal);
+        for (int i = 0; i < 3; i++)
+            mb_ellipsoid(&m, V3(.096f,.018f,i*.05f-.05f), V3(.029f,.018f,.014f), 6, 4, metal);
+        break;
+    case ICON_FLAME:
+        BOX(-.058f,0,-.028f,.058f,.16f,.028f,body);
+        BOX(-.06f,.16f,-.029f,.06f,.211f,.029f,metal);
+        BOX(-.022f,.204f,-.026f,.047f,.23f,.026f,rubber);
+        break;
+    case ICON_MEAT:
+        mb_ellipsoid(&m,V3(0,.055f,0),V3(.15f,.055f,.1f),10,5,body);
+        mb_ellipsoid(&m,V3(.062f,.047f,.048f),V3(.045f,.044f,.031f),8,4,metal);
+        break;
+    case ICON_LEAF:
+        mb_ellipsoid(&m,V3(0,.10f,0),V3(.09f,.10f,.089f),10,6,body);
+        TUBE(0,.18f,0,.015f,.23f,0,.009f,.008f,seam,seam);
+        break;
+    case ICON_GUN:
+        BOX(-.19f,.016f,-.04f,.19f,.084f,.04f,metal);
+        BOX(.10f,.014f,-.108f,.169f,.068f,-.038f,rubber);
+        break;
+    default:
+        BOX(-.126f,0,-.075f,.126f,.20f,.075f,body);
+        BOX(-.125f,.164f,-.077f,.125f,.19f,.077f,seam);
+        BOX(-.02f,.018f,.076f,.083f,.104f,.079f,metal);
+        break;
+    }
+#undef TUBE
+#undef BOX
+    return mb_upload(&m);
+}
+
 static Mesh prop(int k)
 {
     MB m = { 0 };
@@ -1116,6 +1243,7 @@ void assets_load(void)
     for (int i = 0; i < HAIR_COUNT; i++) hair_mesh[i] = hair(i);
     for (int i = W_PISTOL; i < W_COUNT; i++) gun_mesh[i] = gun(i);
     for (int i = 0; i < PROP_COUNT; i++) prop_mesh[i] = prop(i);
+    for (int i = 0; i < ICON_COUNT; i++) item_mesh[i] = item_model(i);
     build_clips();
 }
 

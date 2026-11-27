@@ -489,6 +489,11 @@ static const char *FS_PROP = GLSL(
         float sh = ndl > 0.0 ? shadow_at(vPos, N, ndl) : 1.0;
         vec3 amb = mix(uGnd, uSky, N.y * 0.5 + 0.5);
         vec3 col = alb * (uLCol * ndl * sh + amb + dyn_lights(vPos, N));
+        float finish = clamp(vCol.a * 1.38, 0.0, 1.0);
+        vec3 H = normalize(V + uLDir);
+        float highlight = pow(max(dot(N, H), 0.0), mix(24.0, 90.0, finish));
+        float grazing = pow(1.0 - max(dot(N, V), 0.0), 4.0);
+        col += finish * (uLCol * highlight * ndl * sh * 0.55 + uSky * grazing * 0.22);
         oCol = vec4(apply_fog(col, vPos), 1.0);
     });
 

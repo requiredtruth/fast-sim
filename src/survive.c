@@ -19,7 +19,10 @@ float sleep_fade;
 // container contents, rolled once when first opened
 static Slot cont_items[MAX_CONTS][8];
 static uint32_t cont_rolled[MAX_CONTS];   // key the contents were rolled for, 0 = not yet
-static uint32_t drop_key = 0xF0000000u;
+#define DROP_BASE 0xF0000000u
+#define MAX_GROUND_DROPS 96
+static uint32_t drop_key = DROP_BASE;
+static int ground_drop(Vector3 p, int kind);
 
 static float msg_cd, save_cd = 60, fish_t = -1, act_t = -1;
 static int act_kind, act_car;
@@ -108,10 +111,11 @@ static void give(int it, int n)
     if (left > 0 && sv.home_car >= 0 && cars[sv.home_car].used && dist_xz(cars[sv.home_car].pos, peds[PLAYER].pos) < 12)
         left = pack_add(cargo, CARGO_SLOTS, it, left);
     if (left > 0) {
-        cont_drop(peds[PLAYER].pos, CT_BAG);
-        for (int i = 0; i < MAX_CONTS; i++)
-            if (conts[i].used && conts[i].key == drop_key) { pack_add(cont_items[i], 8, it, left); break; }
-        hud_msg("Pack full: left it on the ground", 2.5f);
+        int ci = ground_drop(peds[PLAYER].pos, CT_BAG);
+        if (ci >= 0) {
+            left = pack_add(cont_items[ci], 8, it, left);
+            hud_msg(left ? "Some supplies would not fit" : "Pack full: left it on the ground", 2.5f);
+        } else hud_msg("No room for more supplies here", 2.5f);
     }
 }
 
@@ -255,7 +259,7 @@ bool item_use(int it)
         hud_msg("Camp pitched. Use it to sleep", 2.5f);
         break;
     case E_WEAPON:
-        hud_msg("Weapons are ready to draw. Swap with Q / E", 2.5f);
+        hud_msg("Weapons are ready to draw. Swap with Q or the mouse wheel", 2.5f);
         return false;
     default:
         if (t->id[0] && !strcmp(t->id, "wood")) {
@@ -338,10 +342,8 @@ static void roll_loot(int ci)
     Cont *c = &conts[ci];
     memset(cont_items[ci], 0, sizeof cont_items[ci]);
     cont_rolled[ci] = c->key ? c->key : 1;
-    uint32_t saved = rnd();
-    (void)saved;
     int n = (int)roundf(roll_count(c->kind) * tune_loot);
-    if (c->kind == CT_CORPSE && c->key >= drop_key) n += 1;
+    if (c->kind == CT_CORPSE && c->key >= DROP_BASE) n += 1;
     float total = 0;
     for (int i = 0; i < nitems; i++) total += items[i].loot[c->kind];
     if (total <= 0) return;
@@ -358,33 +360,66 @@ static void roll_loot(int ci)
     }
 }
 
-void cont_drop(Vector3 p, int kind)
+static int ground_drop(Vector3 p, int kind)
 {
+    if (kind == CT_BAG) {
+        int count = 0;
+        for (int i = 0; i < MAX_CONTS; i++)
+            if (conts[i].used && conts[i].key >= DROP_BASE && conts[i].kind == CT_BAG) count++;
+        if (count >= MAX_GROUND_DROPS) return -1;
+    }
     for (int i = 0; i < MAX_CONTS; i++) {
         if (conts[i].used) continue;
         Cont *c = &conts[i];
         memset(c, 0, sizeof *c);
-        c->used = true; c->kind = kind; c->p = p; c->p.y = ground_y(p.x, p.z);
+        c->used = true; c->kind = kind; c->p = p;
+        c->p.y = fmaxf(p.y, ground_y(p.x, p.z));
         c->stop = -1; c->car = -1;
         c->key = ++drop_key;
         memset(cont_items[i], 0, sizeof cont_items[i]);
         if (kind == CT_CORPSE) cont_rolled[i] = 0;
-        else cont_rolled[i] = c->key;   // the player's own drop: filled by the caller
-        return;
+        else {
+            c->searched = true;
+            cont_rolled[i] = c->key;
+        }
+        return i;
+    }
+    return -1;
+}
+
+void cont_drop(Vector3 p, int kind) { ground_drop(p, kind); }
+
+static uint32_t exhausted_key(uint32_t key) { return (key & ~0xF00u) | ((key & 0xF00u) + 0x800u); }
+
+static void finish_loot(void)
+{
+    Cont *c = &conts[loot_ci];
+    for (int i = 0; i < 8; i++) if (loot_slots[i].n > 0) return;
+    if (c->key < DROP_BASE) {
+        if (c->key) world_set_flag(exhausted_key(c->key));
+    } else if (c->kind == CT_BAG) {
+        c->used = false;
+        loot_ci = -1;
+        ui_screen = UI_NONE;
     }
 }
 
 static void loot_open(int ci)
 {
     Cont *c = &conts[ci];
+    if (c->key && c->key < DROP_BASE && world_flag(exhausted_key(c->key))) {
+        memset(cont_items[ci], 0, sizeof cont_items[ci]);
+        cont_rolled[ci] = c->key;
+    }
     if (cont_rolled[ci] != (c->key ? c->key : 1)) roll_loot(ci);
     for (int i = 0; i < 8; i++) loot_slots[i] = cont_items[ci][i];
     loot_ci = ci;
     ui_screen = UI_LOOT;
     if (!c->searched) {
         c->searched = true;
-        if (c->key && c->key < 0xF0000000u) world_set_flag(c->key);
+        if (c->key && c->key < DROP_BASE) world_set_flag(c->key);
     }
+    finish_loot();
 }
 
 static void loot_sync(void)
@@ -398,13 +433,12 @@ bool loot_take(int slot)
     if (loot_ci < 0 || slot < 0 || slot >= 8 || loot_slots[slot].n <= 0) return false;
     Slot s = loot_slots[slot];
     int left = pack_add(pack, PACK_SLOTS, s.item, s.n);
-    if (left == s.n) {
-        if (sv.home_car >= 0 && cars[sv.home_car].used && dist_xz(cars[sv.home_car].pos, peds[PLAYER].pos) < 12)
-            left = pack_add(cargo, CARGO_SLOTS, s.item, left);
-        if (left == s.n) { hud_msg("No room in the pack", 2); return false; }
-    }
+    if (left > 0 && sv.home_car >= 0 && cars[sv.home_car].used && dist_xz(cars[sv.home_car].pos, peds[PLAYER].pos) < 12)
+        left = pack_add(cargo, CARGO_SLOTS, s.item, left);
+    if (left == s.n) { hud_msg("No room in the pack", 2); return false; }
     loot_slots[slot].n = left;
     loot_sync();
+    finish_loot();
     sfx(S_PICKUP, peds[PLAYER].pos, 0.6f, frand(0.95f, 1.1f));
     return true;
 }
@@ -419,16 +453,19 @@ bool pack_drop(int slot)
     if (slot < 0 || slot >= PACK_SLOTS || pack[slot].n <= 0) return false;
     Slot s = pack[slot];
     // add to a bag at our feet, or make one
-    int bag = -1;
-    for (int i = 0; i < MAX_CONTS; i++)
-        if (conts[i].used && conts[i].key >= 0xF0000000u && conts[i].kind == CT_BAG && dist_xz(conts[i].p, peds[PLAYER].pos) < 2) bag = i;
-    if (bag < 0) {
-        cont_drop(peds[PLAYER].pos, CT_BAG);
-        for (int i = 0; i < MAX_CONTS; i++) if (conts[i].used && conts[i].key == drop_key) bag = i;
+    Vector3 p = peds[PLAYER].pos;
+    int left = s.n;
+    for (int i = 0; i < MAX_CONTS && left > 0; i++) {
+        Cont *c = &conts[i];
+        if (c->used && c->key >= DROP_BASE && c->kind == CT_BAG &&
+            dist_xz(c->p, p) < 1.4f && fabsf(c->p.y - p.y) < 0.75f)
+            left = pack_add(cont_items[i], 8, s.item, left);
     }
-    if (bag < 0) return false;
-    conts[bag].searched = true;
-    int left = pack_add(cont_items[bag], 8, s.item, s.n);
+    if (left > 0) {
+        int bag = ground_drop(p, CT_BAG);
+        if (bag >= 0) left = pack_add(cont_items[bag], 8, s.item, left);
+        else hud_msg("No space for another ground cache", 2);
+    }
     pack[slot].n = left;
     sfx(S_DOOR, peds[PLAYER].pos, 0.3f, 1.5f);
     return left < s.n;
@@ -861,24 +898,49 @@ void survive_tick(float dt)
     }
     // autosave
     save_cd -= dt;
-    if (save_cd <= 0) { save_cd = 60; game_save(); }
+    if (save_cd <= 0) {
+        save_cd = 60;
+        if (!game_save()) hud_msg("Autosave failed", 3);
+    }
 }
 
 void survive_draw(int pass)
 {
-    if (!sv.camp_on) return;
-    Matrix at = MatrixTranslate(sv.camp_p.x, sv.camp_p.y, sv.camp_p.z);
-    draw_mesh(prop_mesh[PROP_FIRE], at, WHITE, MAT_PROP);
-    if (sv.tent) {
+    for (int i = 0; i < MAX_CONTS; i++) {
+        Cont *c = &conts[i];
+        if (!c->used || c->kind != CT_BAG || dist_xz(c->p, cam.position) > 26) continue;
+        if (c->key < DROP_BASE) {
+            draw_mesh(prop_mesh[PROP_BAG], MatrixTranslate(c->p.x, c->p.y, c->p.z), WHITE, MAT_PROP);
+            continue;
+        }
+        for (int j = 0; j < 8; j++) {
+            Slot slot = cont_items[i][j];
+            if (slot.n <= 0 || slot.item >= nitems) continue;
+            Item *it = &items[slot.item];
+            float a = j * 2.39996f, spread = j == 0 ? 0 : 0.26f + 0.035f * j;
+            Vector3 pos = Vector3Add(c->p, (Vector3){ cosf(a) * spread, 0.015f, sinf(a) * spread });
+            Matrix at = MatrixMultiply(MatrixRotateY(a), MatrixTranslate(pos.x, pos.y, pos.z));
+            Color tint = { it->color >> 16, it->color >> 8, it->color, 255 };
+            if (it->kind == IK_WEAPON && it->weapon > W_FIST && it->weapon < W_COUNT) {
+                at = MatrixMultiply(MatrixTranslate(0, 0.19f, 0), at);
+                draw_mesh(gun_mesh[it->weapon], at, WHITE, MAT_PROP);
+            } else draw_mesh(item_mesh[it->icon], at, tint, MAT_PROP);
+        }
+    }
+    if (sv.camp_on) {
+        Matrix at = MatrixTranslate(sv.camp_p.x, sv.camp_p.y, sv.camp_p.z);
+        draw_mesh(prop_mesh[PROP_FIRE], at, WHITE, MAT_PROP);
+    }
+    if (sv.camp_on && sv.tent) {
         Matrix t = MatrixMultiply(MatrixRotateY(0.6f), MatrixTranslate(sv.camp_p.x + 2.8f, ground_y(sv.camp_p.x + 2.8f, sv.camp_p.z + 1), sv.camp_p.z + 1));
         draw_mesh(prop_mesh[PROP_TENT], t, WHITE, MAT_PROP);
     }
-    if (pass == PASS_MAIN && sv.camp_fire > 0) {
+    if (pass == PASS_MAIN && sv.camp_on && sv.camp_fire > 0) {
         float fl = 0.85f + 0.15f * sinf(game_s * 13) * sinf(game_s * 7.3f);
         light_add(Vector3Add(sv.camp_p, (Vector3){ 0, 0.8f, 0 }), (Vector3){ 3.2f * fl, 1.5f * fl, 0.5f * fl }, 11);
     }
     // the flashlight beam lights what's ahead
-    if (pass == PASS_MAIN && sv.torch_on && peds[PLAYER].car < 0) {
+    if (pass == PASS_MAIN && sv.torch_on && sv.flashlight > 0 && peds[PLAYER].car < 0) {
         Ped *p = &peds[PLAYER];
         Vector3 f = { sinf(p->yaw), 0, cosf(p->yaw) };
         light_add(Vector3Add(p->pos, (Vector3){ f.x * 4, 1.2f, f.z * 4 }), (Vector3){ 1.6f, 1.5f, 1.3f }, 9);
@@ -902,7 +964,10 @@ void survive_reset(uint32_t seed)
     pack_add(cargo, CARGO_SLOTS, find_id("jerky"), 2);
     pack_add(cargo, CARGO_SLOTS, find_id("patch"), 1);
     search_ci = -1; loot_ci = -1; trade_with = -1; car_view = -1;
-    fish_t = -1; last_s = -1; save_cd = 60;
+    fish_t = act_t = -1; last_s = -1; save_cd = 60;
+    msg_cd = search_t = sleep_fade = 0;
+    camp_tent = false;
+    drop_key = DROP_BASE;
     (void)seed;
 }
 
@@ -910,12 +975,25 @@ void survive_reset(uint32_t seed)
 
 #ifdef PLATFORM_WEB
 #include <emscripten.h>
-EM_JS(void, web_save_put, (const char *k, const char *v), { try { localStorage.setItem(UTF8ToString(k), UTF8ToString(v)); } catch (e) {} });
+EM_JS(int, web_save_put, (const char *k, const char *v), { try { localStorage.setItem(UTF8ToString(k), UTF8ToString(v)); return 1; } catch (e) { return 0; } });
 EM_JS(char *, web_save_get, (const char *k), { var v = null; try { v = localStorage.getItem(UTF8ToString(k)); } catch (e) {} return v ? stringToNewUTF8(v) : 0; });
 EM_JS(void, web_save_del, (const char *k), { try { localStorage.removeItem(UTF8ToString(k)); } catch (e) {} });
 #endif
 
-static void save_path(char *out, int n) { snprintf(out, n, "%s/trip.sav", save_dir()); }
+#ifdef PLATFORM_WEB
+static const char *save_key(WorldKind kind)
+{
+    static char key[64];
+    snprintf(key, sizeof key, kind == WORLD_ROAD ? "longroad_trip" : "longroad_trip_%s", world_ids[kind]);
+    return key;
+}
+#else
+static void save_path(char *out, int n, WorldKind kind)
+{
+    if (kind == WORLD_ROAD) snprintf(out, n, "%s/trip.sav", save_dir());
+    else snprintf(out, n, "%s/trip-%s.sav", save_dir(), world_ids[kind]);
+}
+#endif
 
 static void put_inv(char **w, char *end, const char *key, Slot *inv, int ns)
 {
@@ -928,8 +1006,8 @@ bool game_save(void)
 {
     Ped *p = &peds[PLAYER];
     if (!p->used || mode == MODE_DEAD || p->state == PS_DEAD) return false;
-    static char buf[65536];
-    char *w = buf, *end = buf + sizeof buf - 256;
+    static char buf[131072];
+    char *w = buf, *end = buf + sizeof buf;
     double px = p->pos.x + world_ox, pz = p->pos.z + world_oz;
     w += snprintf(w, end - w, "longroad=2\nseed=%u\nhours=%.3f\n", world_seed, day_hours);
     w += snprintf(w, end - w, "pos=%.3f %.3f %.3f %.3f\n", px, (double)p->pos.y, pz, (double)p->yaw);
@@ -944,33 +1022,44 @@ bool game_save(void)
                       c->paint.r, c->paint.g, c->paint.b, p->car == sv.home_car);
     }
     if (sv.camp_on) w += snprintf(w, end - w, "camp=%.3f %.3f %.3f %.1f %d\n", sv.camp_p.x + world_ox, (double)sv.camp_p.y, sv.camp_p.z + world_oz, sv.camp_fire, sv.tent);
+    w += snprintf(w, end - w, "bleed=%.3f\n", sv.bleed);
     put_inv(&w, end, "pack", pack, PACK_SLOTS);
     put_inv(&w, end, "cargo", cargo, CARGO_SLOTS);
+    for (int i = 0; i < MAX_CONTS; i++) {
+        Cont *c = &conts[i];
+        if (!c->used || c->key < DROP_BASE || c->kind != CT_BAG) continue;
+        w += snprintf(w, end - w, "drop=%.3f %.3f %.3f ", c->p.x + world_ox, (double)c->p.y, c->p.z + world_oz);
+        put_inv(&w, end, "items", cont_items[i], 8);
+    }
     uint32_t *fl;
     int nf = world_flags_get(&fl);
+    if (end - w < 16 || (size_t)nf > (size_t)(end - w - 16) / 9) return false;
     w += snprintf(w, end - w, "flags=");
     for (int i = 0; i < nf && w < end - 16; i++) w += snprintf(w, end - w, "%x,", fl[i]);
     w += snprintf(w, end - w, "\n");
 #ifdef PLATFORM_WEB
-    web_save_put("longroad_trip", buf);
-    return true;
+    return web_save_put(save_key(world_kind), buf);
 #else
     char path[300];
-    save_path(path, sizeof path);
-    return write_text(path, buf);
+    save_path(path, sizeof path, world_kind);
+    char tmp[sizeof path + 5];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    if (write_text(tmp, buf) && rename(tmp, path) == 0) return true;
+    remove(tmp);
+    return false;
 #endif
 }
 
-bool game_has_save(void)
+bool game_has_save(WorldKind kind)
 {
 #ifdef PLATFORM_WEB
-    char *t = web_save_get("longroad_trip");
+    char *t = web_save_get(save_key(kind));
     bool ok = t != NULL;
     free(t);
     return ok;
 #else
     char path[300];
-    save_path(path, sizeof path);
+    save_path(path, sizeof path, kind);
     return FileExists(path);
 #endif
 }
@@ -978,10 +1067,10 @@ bool game_has_save(void)
 void game_delete_save(void)
 {
 #ifdef PLATFORM_WEB
-    web_save_del("longroad_trip");
+    web_save_del(save_key(world_kind));
 #else
     char path[300];
-    save_path(path, sizeof path);
+    save_path(path, sizeof path, world_kind);
     remove(path);
 #endif
 }
@@ -1005,17 +1094,23 @@ bool game_load(void)
 {
     char *text;
 #ifdef PLATFORM_WEB
-    text = web_save_get("longroad_trip");
+    text = web_save_get(save_key(world_kind));
     if (!text) return false;
 #else
     char path[300];
-    save_path(path, sizeof path);
+    save_path(path, sizeof path, world_kind);
     if (!FileExists(path)) return false;
     text = LoadFileText(path);
     if (!text) return false;
 #endif
     uint32_t seed = 0;
-    if (sscanf(strstr(text, "seed=") ? strstr(text, "seed=") : "", "seed=%u", &seed) != 1) {
+    double px, pz;
+    float py, yaw;
+    const char *q = strstr(text, "\npos=");
+    if (sscanf(text, "longroad=2\nseed=%u", &seed) != 1 || !q ||
+        sscanf(q, "\npos=%lf %f %lf %f", &px, &py, &pz, &yaw) != 4 ||
+        !isfinite(px) || !isfinite(py) || !isfinite(pz) || !isfinite(yaw) ||
+        fabs(px) > 2e7 || fabs(pz) > 2e7 || fabsf(py) > 10000) {
 #ifdef PLATFORM_WEB
         free(text);
 #else
@@ -1025,18 +1120,16 @@ bool game_load(void)
     }
     new_game(seed);
     // the save holds absolute positions: move the origin there before anything streams
-    double px = 0, pz = 0; float py = 0, yaw = 0;
-    const char *q;
-    if ((q = strstr(text, "\npos="))) sscanf(q, "\npos=%lf %f %lf %f", &px, &py, &pz, &yaw);
     // throw away the fresh trip's car, then rebase to the saved spot
     if (sv.home_car >= 0) { car_remove(sv.home_car); sv.home_car = -1; }
     Ped *p = &peds[PLAYER];
     if (p->car >= 0) { p->car = -1; p->state = PS_IDLE; }
     Vector3 d = { (float)(px - world_ox), 0, (float)(pz - world_oz) };
     world_rebase(d);
-    p->pos = (Vector3){ 0, py, 0 };
+    p->pos = (Vector3){ (float)(px - world_ox), py, (float)(pz - world_oz) };
     p->yaw = yaw;
-    world_stream_all();
+    extern float cam_yaw;
+    cam_yaw = yaw;
     if ((q = strstr(text, "\nhours="))) sscanf(q, "\nhours=%f", &day_hours);
     if ((q = strstr(text, "\nstats="))) {
         int torch = 0;
@@ -1054,11 +1147,15 @@ bool game_load(void)
             if (*s == ',') s++;
         }
     }
+    // Refresh streamed objects with the restored flags before rebuilding the owned car.
+    world_reload_active();
+    if ((q = strstr(text, "\nbleed="))) sscanf(q, "\nbleed=%f", &sv.bleed);
     if ((q = strstr(text, "\ncar="))) {
         int model, armor, r, g, b, inside; double cx, cz; float cy, cyaw;
         float fuel, eng, t0, t1, t2, t3, bat, rad, hp;
         if (sscanf(q, "\ncar=%d %lf %f %lf %f %f %f %f %f %f %f %f %f %f %d %d %d %d %d", &model, &cx, &cy, &cz, &cyaw, &fuel, &eng,
-                   &t0, &t1, &t2, &t3, &bat, &rad, &hp, &armor, &r, &g, &b, &inside) >= 18) {
+                   &t0, &t1, &t2, &t3, &bat, &rad, &hp, &armor, &r, &g, &b, &inside) == 19 && model >= 0 && model < CAR_MODELS &&
+            isfinite(cx) && isfinite(cy) && isfinite(cz) && isfinite(cyaw)) {
             Vector3 at = { (float)(cx - world_ox), cy, (float)(cz - world_oz) };
             int ci = car_spawn(model, at, cyaw, AI_NONE);
             if (ci >= 0) {
@@ -1067,7 +1164,7 @@ bool game_load(void)
                 c->battery = bat; c->radiator = rad; c->health = hp; c->armor = armor; c->owned = true;
                 c->paint = (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)b, 255 };
                 sv.home_car = ci;
-                if (inside) { c->driver = PLAYER; p->car = ci; p->state = PS_IN_CAR; pv[PLAYER].sit = 1; }
+                if (inside) { c->driver = PLAYER; p->car = ci; p->state = PS_IN_CAR; pv[PLAYER].sit = 1; p->pos = c->pos; }
             }
         }
     }
@@ -1077,18 +1174,31 @@ bool game_load(void)
             sv.camp_on = true; sv.camp_p = (Vector3){ (float)(cx - world_ox), cy, (float)(cz - world_oz) }; sv.camp_fire = fire; sv.tent = tent;
         }
     }
-    if ((q = strstr(text, "\npack="))) { char line[4096]; sscanf(q, "\npack=%4095[^\n]", line); get_inv(line, pack, PACK_SLOTS); }
+    if ((q = strstr(text, "\npack="))) { char line[4096] = { 0 }; sscanf(q, "\npack=%4095[^\n]", line); get_inv(line, pack, PACK_SLOTS); }
     else memset(pack, 0, sizeof pack);
     if ((q = strstr(text, "\ncargo="))) { char line[4096]; line[0] = 0; sscanf(q, "\ncargo=%4095[^\n]", line); get_inv(line, cargo, CARGO_SLOTS); }
     else memset(cargo, 0, sizeof cargo);
+    q = text;
+    while ((q = strstr(q, "\ndrop="))) {
+        double x, z;
+        float y;
+        char line[512];
+        if (sscanf(++q, "drop=%lf %f %lf items=%511[^\n]", &x, &y, &z, line) != 4 ||
+            !isfinite(x) || !isfinite(y) || !isfinite(z) || fabs(x) > 2e7 || fabs(z) > 2e7) continue;
+        int ci = ground_drop((Vector3){ (float)(x - world_ox), y, (float)(z - world_oz) }, CT_BAG);
+        if (ci >= 0) {
+            get_inv(line, cont_items[ci], 8);
+            bool empty = true;
+            for (int i = 0; i < 8; i++) if (cont_items[ci][i].n > 0) empty = false;
+            if (empty) conts[ci].used = false;
+        }
+    }
 #ifdef PLATFORM_WEB
     free(text);
 #else
     UnloadFileText(text);
 #endif
-    // containers that came back live before the flags were read
-    for (int i = 0; i < MAX_CONTS; i++) if (conts[i].used && conts[i].key) conts[i].searched = world_flag(conts[i].key);
-    hud_big("Back on the road", 2.5f);
+    hud_big(world_names[world_kind], 2.5f);
     return true;
 }
 

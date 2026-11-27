@@ -436,6 +436,14 @@ static void weather_fx(float dt)
     }
 }
 
+void fx_reset(void)
+{
+    memset(parts, 0, sizeof parts);
+    memset(skid_on, 0, sizeof skid_on);
+    npart = part_head = ndecal = decal_head = nskid = skid_head = ntracer = nfxl = 0;
+    shake = 0;
+}
+
 void fx_shift(Vector3 d)
 {
     for (int i = 0; i < MAX_PART; i++) { parts[i].p = Vector3Subtract(parts[i].p, d); if (parts[i].gy > -1e8f) parts[i].gy -= d.y; }

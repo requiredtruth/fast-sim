@@ -15,6 +15,9 @@ bool audio_offline;
 float game_s;
 uint64_t ticks;
 uint32_t world_seed;
+WorldKind world_kind, next_world;
+const char *const world_names[WORLD_COUNT] = { "LONG ROAD", "METRO GRID", "PINE COUNTRY", "FROSTLINE", "RED MESA" };
+const char *const world_ids[WORLD_COUNT] = { "road", "city", "forest", "snow", "mesa" };
 bool want_new_game, want_continue, want_quit;
 float audio_volume = 1;
 
@@ -162,6 +165,8 @@ void new_game(uint32_t seed)
     for (int i = 0; i < MAX_PEDS; i++) peds[i].used = false;
     peds[PLAYER].health = 100;
     raiders_reset();
+    fx_reset();
+    world_flags_clear();
     data_load();
     survive_reset(seed);
     world_build(seed);
@@ -184,6 +189,7 @@ void new_game(uint32_t seed)
         peds[PLAYER].yaw = s->yaw - PI * 0.5f;
         hud_log_stop(s->name, 0);
         s->visited = true;
+        world_set_flag(world_key(s->seg, 15, 0));
     }
     int ci = car_spawn(CAR_WAGON, car_at, car_yaw, AI_NONE);
     if (ci >= 0) {
@@ -273,15 +279,18 @@ static void frame(void)
 
     if (want_new_game) {
         want_new_game = false;
-        game_delete_save();
+        world_kind = next_world;
         new_game((uint32_t)time(NULL) ^ (uint32_t)(GetTime() * 1000003));
         start_play();
-        hud_big("The road goes on", 3);
+        if (!game_save()) hud_msg("Could not save this trip", 3);
+        hud_big(world_names[world_kind], 3);
     }
     if (want_continue) {
         want_continue = false;
+        WorldKind previous = world_kind;
+        world_kind = next_world;
         if (game_load()) start_play();
-        else hud_msg("That save could not be read", 3);
+        else { world_kind = previous; hud_big("That save could not be read", 3); }
     }
 
     if (mode == MODE_TITLE) {
@@ -295,8 +304,13 @@ static void frame(void)
         pending.lx += now.lx; pending.ly += now.ly; pending.hit |= now.hit;
         acc += fminf(GetFrameTime(), 0.1f);
         bool paused = ui_screen != UI_NONE;
-        if (paused) { acc = 0; pending.lx = pending.ly = 0; pending.hit = 0; audio_tick(0); }
-        while (acc >= DT) {
+        if (paused) {
+            acc = 0;
+            pending.lx = pending.ly = 0;
+            pending.hit = 0;
+            audio_tick(0);
+        }
+        while (acc >= DT && ui_screen == UI_NONE) {
             tick(&pending);
             pending.lx = pending.ly = 0;
             pending.hit = 0;
@@ -357,6 +371,10 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--quality")) { t_quality = atoi(v); i++; }
         else if (!strcmp(a, "--hours")) { t_hours = (float)atof(v); i++; }
         else if (!strcmp(a, "--km")) { t_km = (float)atof(v); i++; }
+        else if (!strcmp(a, "--world")) {
+            for (int k = 0; k < WORLD_COUNT; k++) if (!strcmp(v, world_ids[k])) world_kind = k;
+            i++;
+        }
         else if (!strcmp(a, "--weather")) { t_weather = v; i++; }
         else if (!strcmp(a, "--ui")) { t_ui = v; i++; }
         else if (!strcmp(a, "--touch")) t_touch = true;
@@ -447,8 +465,8 @@ int main(int argc, char **argv)
         render_frame(GetScreenWidth(), GetScreenHeight());
         hud_draw(GetScreenWidth(), GetScreenHeight());
         if (t_ui) {
-            static const char *names[] = { "none", "pack", "craft", "car", "trade", "map", "pause", "settings", "mods", "title", "dead", "help", "loot" };
-            for (int k = 0; k < 13; k++) if (!strcmp(t_ui, names[k])) ui_screen = k;
+            static const char *names[] = { "none", "pack", "craft", "car", "trade", "map", "pause", "settings", "mods", "title", "dead", "help", "loot", "worlds" };
+            for (int k = 0; k < (int)(sizeof names / sizeof *names); k++) if (!strcmp(t_ui, names[k])) ui_screen = k;
             if (ui_screen == UI_CAR) car_view = sv.home_car;
             if (ui_screen == UI_TRADE) { for (int k = 1; k < MAX_PEDS; k++) if (peds[k].used) { trade_open(k); break; } }
             if (ui_screen == UI_LOOT) { cont_drop(peds[PLAYER].pos, CT_CORPSE); for (int k = MAX_CONTS - 1; k >= 0; k--) if (conts[k].used && conts[k].kind == CT_CORPSE) { conts[k].searched = false; extern int loot_force(int); loot_force(k); break; } }

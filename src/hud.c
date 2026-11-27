@@ -203,11 +203,12 @@ static bool hover(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(
 // a click: pressed and released inside the same rectangle without dragging far
 static bool clicked(Rectangle r)
 {
-    if (press_used || !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) return false;
+    if (!press_live || press_used || !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) return false;
     Vector2 m = GetMousePosition();
     if (!CheckCollisionPointRec(m, r) || !CheckCollisionPointRec(press_at, r)) return false;
     if (Vector2Distance(m, press_at) > 24 * S) return false;
     press_used = true;
+    press_live = false;
     sfx(S_UI, cam.position, 0.35f, 1.1f);
     return true;
 }
@@ -429,7 +430,7 @@ static void world_panel(void)
     const char *wx = weather_snow > 0.3f ? "SNOW" : weather_rain > 0.3f ? "RAIN" : weather_dust > 0.3f ? "DUST STORM" : weather_fog > 0.3f ? "FOG" : "CLEAR";
     snprintf(b, sizeof b, "%.0f C  %s", t, wx);
     text(b, x - 8 * S, 46 * S, 13 * S, t < 5 ? STEEL : t > 30 ? WARN : DIM, 2);
-    snprintf(b, sizeof b, "KM %.1f  %s", (s - world_start_s()) / 1000, biome_name(biome_at(s)));
+    snprintf(b, sizeof b, "KM %.1f  %s", (s - world_start_s()) / 1000, world_kind == WORLD_CITY ? "Metro" : biome_name(biome_at(s)));
     text(b, x - 8 * S, 68 * S, 13 * S, SAND, 2);
 }
 
@@ -1196,31 +1197,75 @@ static void pause_screen(void)
     DrawRectangle(0, 0, W, H, (Color){ 0, 0, 0, 120 });
     float w = 340 * S, x = W / 2 - w / 2, y = H * 0.22f;
     text("PAUSED", W / 2, y - 60 * S, 34 * S, SAND, 1);
-    if (button(rect(x, y, w, 52 * S), "RESUME", true) || IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACK)) ui_screen = UI_NONE;
+    if (button(rect(x, y, w, 52 * S), "RESUME", true)) ui_screen = UI_NONE;
     if (button(rect(x, y + 64 * S, w, 52 * S), "PACK", true)) ui_screen = UI_PACK;
     if (button(rect(x, y + 128 * S, w, 52 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
     if (button(rect(x, y + 192 * S, w, 52 * S), "MODS", true)) ui_screen = UI_MODS;
     if (button(rect(x, y + 256 * S, w, 52 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
-    if (button(rect(x, y + 320 * S, w, 52 * S), "SAVE AND QUIT", true)) { game_save(); mode = MODE_TITLE; ui_screen = UI_TITLE; }
+    if (button(rect(x, y + 320 * S, w, 52 * S), "SAVE AND QUIT", true)) {
+        if (game_save()) { mode = MODE_TITLE; ui_screen = UI_TITLE; }
+        else hud_big("Could not save this trip", 3);
+    }
 }
 
 extern bool want_new_game, want_continue, want_quit;
+
+static bool playable_save[WORLD_COUNT];
+static int replace_world = -1;
+
+static void open_world_menu(void)
+{
+    for (int k = 0; k < WORLD_COUNT; k++) playable_save[k] = game_has_save(k);
+    replace_world = -1;
+    mode = MODE_TITLE;
+    ui_screen = UI_WORLDS;
+}
+
+static void world_screen(void)
+{
+    static const char *const details[WORLD_COUNT] = {
+        "Endless highway through changing country",
+        "Drive side streets and scavenge storefronts",
+        "Pine woods, ranger stations and fishing ponds",
+        "Snowy mountain roads and cold nights",
+        "Red-rock canyons, dust storms and salvage"
+    };
+    DrawRectangle(0, 0, W, H, (Color){ 7, 10, 14, 180 });
+    float width = 690 * S, x = (W - width) * 0.5f, y = (H - 492 * S) * 0.5f;
+    panel(rect(x, y, width, 492 * S), (Color){ 24, 29, 34, 246 });
+    text("CHOOSE A WORLD", x + 24 * S, y + 22 * S, 29 * S, SAND, 0);
+    if (button(rect(x + 555 * S, y + 19 * S, 110 * S, 38 * S), "BACK", true) ||
+        IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACK)) { ui_screen = UI_TITLE; return; }
+    for (int k = 0; k < WORLD_COUNT; k++) {
+        float row = y + (77 + k * 76) * S;
+        panel(rect(x + 18 * S, row, 654 * S, 67 * S), (Color){ 36, 42, 48, 255 });
+        text(world_names[k], x + 32 * S, row + 11 * S, 20 * S, INK, 0);
+        text(details[k], x + 32 * S, row + 39 * S, 13 * S, DIM, 0);
+        if (button(rect(x + 393 * S, row + 14 * S, 122 * S, 39 * S), "CONTINUE", playable_save[k])) {
+            next_world = k;
+            want_continue = true;
+        }
+        const char *label = replace_world == k ? "REPLACE SAVE" : "NEW TRIP";
+        if (button(rect(x + 526 * S, row + 14 * S, 130 * S, 39 * S), label, true)) {
+            if (playable_save[k] && replace_world != k) replace_world = k;
+            else { next_world = k; want_new_game = true; }
+        }
+    }
+}
 
 static void title_screen(void)
 {
     DrawRectangleGradientV(0, 0, W, H, (Color){ 0, 0, 0, 40 }, (Color){ 0, 0, 0, 170 });
     float y = H * 0.16f;
     text("LONG ROAD", W * 0.08f, y, 64 * S, SAND, 0);
-    text("A HIGHWAY SURVIVAL GAME", W * 0.08f + 4 * S, y + 80 * S, 16 * S, INK, 0);
+    text("PROCEDURAL DRIVING AND SURVIVAL", W * 0.08f + 4 * S, y + 80 * S, 16 * S, INK, 0);
     float w = 340 * S, x = W * 0.08f, by = H * 0.42f;
-    bool save = game_has_save();
-    if (button(rect(x, by, w, 54 * S), "CONTINUE THE TRIP", save)) want_continue = true;
-    if (button(rect(x, by + 64 * S, w, 54 * S), "NEW TRIP", true)) want_new_game = true;
-    if (button(rect(x, by + 128 * S, w, 54 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
-    if (button(rect(x, by + 192 * S, w, 54 * S), "MODS", true)) ui_screen = UI_MODS;
-    if (button(rect(x, by + 256 * S, w, 54 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
+    if (button(rect(x, by, w, 54 * S), "CHOOSE WORLD", true)) open_world_menu();
+    if (button(rect(x, by + 64 * S, w, 54 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
+    if (button(rect(x, by + 128 * S, w, 54 * S), "MODS", true)) ui_screen = UI_MODS;
+    if (button(rect(x, by + 192 * S, w, 54 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
 #if defined(PLATFORM_DESKTOP)
-    if (button(rect(x, by + 320 * S, w, 54 * S), "QUIT", true)) want_quit = true;
+    if (button(rect(x, by + 256 * S, w, 54 * S), "QUIT", true)) want_quit = true;
 #endif
     char b[64];
     snprintf(b, sizeof b, "%s  %d MODS ON", GAME_VERSION, ({ int n = 0; for (int i = 0; i < mods_count(); i++) n += mod_enabled(i); n; }));
@@ -1240,7 +1285,7 @@ static void dead_screen(void)
     if (t) { best = atoi(t); free(t); }
     snprintf(b, sizeof b, "BEST TRIP %.1f KM", fmaxf(best / 10.0f, sv.km)); text(b, W / 2, y, 15 * S, SAND, 1);
     float w = 320 * S;
-    if (button(rect(W / 2 - w / 2, H * 0.62f, w, 54 * S), "NEW TRIP", true)) want_new_game = true;
+    if (button(rect(W / 2 - w / 2, H * 0.62f, w, 54 * S), "CHOOSE WORLD", true)) open_world_menu();
     if (button(rect(W / 2 - w / 2, H * 0.62f + 64 * S, w, 54 * S), "TITLE", true)) { mode = MODE_TITLE; ui_screen = UI_TITLE; }
 }
 
@@ -1249,11 +1294,12 @@ static void dead_screen(void)
 void hud_input(const Input *in)
 {
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { press_at = GetMousePosition(); press_live = true; }
+    else if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) press_live = false;
     press_used = false;
     if (mode == MODE_TITLE || mode == MODE_DEAD) return;
     if (in->hit & BTN_PAUSE) {
         if (ui_screen == UI_NONE) ui_screen = UI_PAUSE;
-        else if (ui_screen != UI_PAUSE) { ui_screen = UI_NONE; loot_ci = -1; }
+        else { ui_screen = UI_NONE; loot_ci = -1; }
     }
     if (in->hit & BTN_BAG) ui_screen = ui_screen == UI_PACK ? UI_NONE : UI_PACK;
     if (in->hit & BTN_MAP) ui_screen = ui_screen == UI_MAP ? UI_NONE : UI_MAP;
@@ -1267,16 +1313,16 @@ void hud_draw(int w, int h)
     S = fminf(h / 720.0f, w / 1280.0f) * (is_touch_device() ? 1.15f : 1.0f);
     ui_blocks_game = ui_screen != UI_NONE;
     if (mode == MODE_TITLE) {
-        if (ui_screen == UI_SETTINGS) settings_screen();
+        if (ui_screen == UI_WORLDS) world_screen();
+        else if (ui_screen == UI_SETTINGS) settings_screen();
         else if (ui_screen == UI_MODS) mods_screen();
         else if (ui_screen == UI_HELP) help_screen();
         else { ui_screen = UI_TITLE; title_screen(); }
+        messages();
         return;
     }
     if (sleep_fade > 0) DrawRectangle(0, 0, W, H, (Color){ 0, 0, 0, (unsigned char)(255 * Clamp(sleep_fade, 0, 1)) });
     if (mode == MODE_DEAD) {
-        static float dead_t;
-        dead_t += GetFrameTime();
         if (peds[PLAYER].state == PS_DEAD && pv[PLAYER].dead_s > 2.5f) { ui_screen = UI_DEAD; dead_screen(); }
         messages();
         return;

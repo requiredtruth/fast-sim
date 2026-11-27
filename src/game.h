@@ -148,7 +148,12 @@ extern Cont conts[MAX_CONTS];
 extern Stop stops[MAX_STOPS];
 extern double world_ox, world_oz;     // world space origin offset after rebasing, metres
 
+typedef enum { WORLD_ROAD, WORLD_CITY, WORLD_FOREST, WORLD_SNOW, WORLD_MESA, WORLD_COUNT } WorldKind;
+extern WorldKind world_kind, next_world;
+extern const char *const world_names[WORLD_COUNT];
+extern const char *const world_ids[WORLD_COUNT];
 void world_build(uint32_t seed);
+void world_reload_active(void);
 void world_tick(float dt);
 int  light_state(int light);
 bool walk_light_ok(int light);
@@ -333,6 +338,7 @@ typedef struct {
 
 enum { ICON_CAN, ICON_BOTTLE, ICON_BOX, ICON_CROSS, ICON_JERRY, ICON_GEAR, ICON_WRENCH, ICON_BULLET, ICON_GUN, ICON_BAG,
        ICON_PLANK, ICON_COIN, ICON_TIRE, ICON_BATTERY, ICON_PILL, ICON_FLAME, ICON_MEAT, ICON_LEAF, ICON_COUNT };
+extern Mesh item_mesh[ICON_COUNT];
 
 typedef struct { int item, n; } Slot;
 
@@ -381,7 +387,7 @@ const char *survive_prompt(void);        // what BTN_USE would do now, or NULL
 void loot_container(int ci);
 bool game_save(void);
 bool game_load(void);
-bool game_has_save(void);
+bool game_has_save(WorldKind kind);
 void game_delete_save(void);
 void survive_sleep(float hours);
 void trade_open(int ped);
@@ -445,6 +451,7 @@ void fx_shake(float amount);
 void fx_tick(float dt);
 void fx_draw(int pass);
 void fx_shift(Vector3 d);
+void fx_reset(void);
 
 // ---- rendering (render.c)
 
@@ -484,7 +491,7 @@ void hud_log_stop(const char *name, float km);
 void render_set_quality(int q);   // on-screen controls; true when touch is in use
 void hud_input(const Input *in);                   // menus and the pack read input here
 extern int ui_screen;
-enum { UI_NONE, UI_PACK, UI_CRAFT, UI_CAR, UI_TRADE, UI_MAP, UI_PAUSE, UI_SETTINGS, UI_MODS, UI_TITLE, UI_DEAD, UI_HELP, UI_LOOT };
+enum { UI_NONE, UI_PACK, UI_CRAFT, UI_CAR, UI_TRADE, UI_MAP, UI_PAUSE, UI_SETTINGS, UI_MODS, UI_TITLE, UI_DEAD, UI_HELP, UI_LOOT, UI_WORLDS };
 extern bool ui_blocks_game;                        // a menu has the input
 
 // ---- platform (platform.c): tilt, touch, storage paths

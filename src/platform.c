@@ -228,6 +228,6 @@ bool write_text(const char *path, const char *text)
     if (!f) return false;
     size_t n = strlen(text);
     bool ok = fwrite(text, 1, n, f) == n;
-    fclose(f);
+    if (fclose(f) != 0) ok = false;
     return ok;
 }

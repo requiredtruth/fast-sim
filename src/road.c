@@ -66,8 +66,12 @@ static int rb_k[64], rb_v[64];
 static bool rb_init;
 static int region_biome_cached(int r)
 {
+    static const int fixed[WORLD_COUNT] = {
+        [WORLD_CITY] = BIOME_PLAINS, [WORLD_FOREST] = BIOME_FOREST, [WORLD_SNOW] = BIOME_SNOW, [WORLD_MESA] = BIOME_BADLANDS
+    };
+    if (world_kind != WORLD_ROAD) return fixed[world_kind];
     int *ck = rb_k, *cv = rb_v;
-    if (!rb_init) { for (int i = 0; i < 64; i++) ck[i] = -1; rb_init = true; }
+    if (!rb_init) { for (int i = 0; i < 64; i++) ck[i] = INT32_MIN; rb_init = true; }
     int slot = r & 63;
     if (ck[slot] == r) return cv[slot];
     int b;
@@ -118,12 +122,14 @@ static float ph[8];
 
 static float heading_at(double s)
 {
+    if (world_kind == WORLD_CITY) return 0;
     float a = 0.5f * sinf((float)(s / 2100.0) + ph[0]) + 0.3f * sinf((float)(s / 830.0) + ph[1]) + 0.13f * sinf((float)(s / 360.0) + ph[2]);
     return a * sm(200, 1200, (float)s);
 }
 
 static float elev_at(double s)
 {
+    if (world_kind == WORLD_CITY) return 0;
     float amp = 0;
     for (int b = 0; b < BIOME_COUNT; b++) amp += biome_mix((float)s, b) * biome_amp[b];
     amp *= 0.9f;
@@ -258,7 +264,16 @@ static StopDesc *stop_desc(int k)
     d->k = k;
     d->kind = STOP_NONE;
     if (k == START_K) d->kind = STOP_GAS;
-    else if (k > START_K + 3) {
+    else if (world_kind == WORLD_CITY && k > 2) {
+        static const int districts[] = { STOP_TOWN, STOP_GARAGE, STOP_TOWN, STOP_DINER, STOP_TOWN, STOP_TRADER, STOP_TOWN, STOP_MOTEL };
+        d->kind = districts[k % (sizeof districts / sizeof *districts)];
+    } else if (world_kind == WORLD_FOREST && k > START_K && k % 5 == 0) {
+        d->kind = k % 10 == 0 ? STOP_RANGER : STOP_CAMP;
+    } else if (world_kind == WORLD_SNOW && k > START_K && k % 7 == 0) {
+        d->kind = k % 2 == 0 ? STOP_MOTEL : STOP_GARAGE;
+    } else if (world_kind == WORLD_MESA && k > START_K && k % 7 == 0) {
+        d->kind = k % 2 == 0 ? STOP_WRECKS : STOP_TRADER;
+    } else if (k > START_K + 3) {
         int b = (k - START_K - 4) / BLOCK, o = (k - START_K - 4) % BLOCK;
         int o1 = (int)(hu(b, 5, 1) * (BLOCK - 4)) + 1;
         bool two = hu(b, 5, 2) < 0.3f;
@@ -275,7 +290,7 @@ static StopDesc *stop_desc(int k)
     }
     if (d->kind == STOP_NONE) return d;
     d->s = k * SEG_LEN + 64;
-    d->side = (k == START_K || hu(k, 7, 1) < 0.5f) ? -1 : 1;
+    d->side = world_kind == WORLD_CITY && k != START_K ? (k % 2 ? -1 : 1) : (k == START_K || hu(k, 7, 1) < 0.5f) ? -1 : 1;
     d->biome = biome_at((float)d->s);
     d->R = d->kind == STOP_WRECKS ? 0 : stop_R[d->kind];
     float dist = d->kind == STOP_TOWN ? 48 : d->kind == STOP_WRECKS ? 0 : d->R * 0.9f + 9 + hu(k, 7, 2) * 6;
@@ -365,6 +380,7 @@ static float height_sd(double s, float d, double X, double Z)
     float e = elev_at(s);
     float ad = fabsf(d);
     if (ad < ASPH) return e + 0.03f;
+    if (world_kind == WORLD_CITY && ad < 153) return 0;
     float w = sm(ASPH + 3, ASPH + 70, ad);
     float ditch = -0.6f * bump(ASPH + 0.6f, ASPH + 7.5f, ad);
     float h = mixf(e + ditch, e + hills(X, Z, s), w);
@@ -655,6 +671,7 @@ static void car_add(int model, Vector3 p, float yaw, bool burnt)
 
 static Mat ground_mat(double s, float d)
 {
+    if (world_kind == WORLD_CITY && fabsf(d) < 145) return M(L_CONCRETE, 0xa9a6a0);
     float grass = 0, r = 0, g = 0, b = 0;
     static const float gw[BIOME_COUNT] = { 0.05f, 0.78f, 0.95f, 0.02f, 0.25f };
     static const uint32_t col[BIOME_COUNT] = { 0xf2e2c4, 0xf0f0d8, 0xd8e8c8, 0xf0b090, 0xf4f8ff };
@@ -1162,7 +1179,7 @@ static void stop_build(StopDesc *d)
                 furniture(CT_TOOLBOX, V3(-4.5f, 0, -4.2f), PI);
                 furniture(CT_SHELF, V3(3.5f, 0, -4.0f), PI);
             }
-            if (ri(3) == 0) car_add(ri(8), fr_p(V3(rf(-3, 3), 0, 6.5f)), d->yaw + PI * 0.5f, ri(4) == 0);
+            if (ri(3) == 0) car_add(ri(8), V3(rf(-3, 3), 0, 6.5f), PI * 0.5f, ri(4) == 0);
             frame_set(V3((float)(d->px - cax), d->y, (float)(d->pz - caz)), d->yaw);
         }
         frame_set(V3((float)(d->px - cax), d->y, (float)(d->pz - caz)), d->yaw);
@@ -1375,6 +1392,43 @@ static bool near_lot(double X, double Z, int k, float pad)
         if (d->pond && hypot(X - d->wx, Z - d->wz) < d->wr + 3) return true;
     }
     return false;
+}
+
+static void build_district(int k)
+{
+    // Cross streets link the highway with the parallel streets on either side.
+    float z = (k % 2 == 0) ? 112 : 16;
+    Mat asphalt = M(L_ASPHALT, 0x909497);
+    lot_surface(-136, z - 4, -ASPH, z + 4, asphalt);
+    lot_surface(ASPH, z - 4, 136, z + 4, asphalt);
+    for (int side = -1; side <= 1; side += 2) {
+        float x = side * 112.0f;
+        lot_surface(x - 4, 0, x + 4, SEG_LEN, asphalt);
+        for (int i = 0; i < 3; i++) {
+            float bz = (k % 2 == 0 ? 20 : 40) + i * 30;
+            float bx = side * rf(126, 132);
+            float h = rf(12, 38), hw = rf(6, 9), hd = rf(7, 10);
+            Mat wall = M(i == 0 ? L_BRICK : L_PANEL, i == 0 ? 0xb58069 : i == 1 ? 0x9da7b1 : 0xbeb4a1);
+            solid(bx - hw, 0, bz - hd, bx + hw, h, bz + hd, wall, M(L_CONCRETE, 0x777c81));
+            Mat glass = mf(M(L_PANEL, 0x253e4e), F_SELF, (k + i) % 3 == 0 ? 0.35f : 0.05f);
+            for (float floor = 3; floor + 1.3f < h; floor += 3.1f) {
+                for (int bay = -2; bay <= 2; bay++) {
+                    float in = bx - side * (hw + 0.02f);
+                    float wz = bz + bay * hd * 0.35f;
+                    quadv(GEO_SOLID, V3(in, floor, wz - side * 0.8f),
+                          V3(0, 0, side * 1.6f), V3(0, 1.3f, 0), 0, 0, 1, 1, glass);
+                }
+            }
+        }
+        float curb = side * (ASPH + 0.9f);
+        lot_surface(curb - 0.75f, 0, curb + 0.75f, z - 4, M(L_SIDEWALK, 0xd2d0c8));
+        lot_surface(curb - 0.75f, z + 4, curb + 0.75f, SEG_LEN, M(L_SIDEWALK, 0xd2d0c8));
+        float lz = z + (k % 2 == 0 ? -7 : 7);
+        solid(curb - 0.07f, 0, lz - 0.07f, curb + 0.07f, 5, lz + 0.07f, M_STEEL, M_STEEL);
+        sbox(curb - 0.3f, 4.94f, lz - 0.16f, curb + 0.3f, 5.10f, lz + 0.16f, M_STEEL,
+             mf(M(L_PLAIN, 0xffe4bd), F_SELF, 2.0f));
+        lamp_add(V3(curb, 4.85f, lz));
+    }
 }
 
 static void build_roadside(int k)
@@ -1607,7 +1661,8 @@ static void seg_build(int k)
     frame_reset();
     build_terrain(k);
     build_road_surface(k);
-    build_roadside(k);
+    if (world_kind == WORLD_CITY) build_district(k);
+    else build_roadside(k);
     StopDesc *d = stop_desc(k);
     if (d->kind != STOP_NONE) {
         stop_build(d);
@@ -2228,11 +2283,20 @@ void world_build(uint32_t seed)
     if (!tex_done) { texture_build(quality == 0 ? 256 : 512); tex_done = true; }
     road_ensure(1024);
     weather_rain = weather_fog = weather_dust = weather_snow = 0;
-    weather_wind = 0.2f;
+    wt_rain = wt_fog = wt_dust = wt_snow = 0;
+    wt_wind = weather_wind = 0.2f;
+    if (world_kind == WORLD_SNOW) wt_snow = weather_snow = 0.6f;
+    if (world_kind == WORLD_FOREST) wt_fog = weather_fog = 0.27f;
     weather_t = 300;
 }
 
 void world_stream_all(void) { stream(true); }
+
+void world_reload_active(void)
+{
+    for (int i = 0; i < NSEG; i++) if (segs[i].live) seg_deactivate(&segs[i]);
+    stream(true);
+}
 
 void weather_force(const char *w)
 {
