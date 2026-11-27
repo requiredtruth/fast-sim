@@ -1,17 +1,24 @@
+// Long Road: the frame loop, input, starting and ending trips.
 #include "game.h"
+#include "ped.h"
 #include "rlgl.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef PLATFORM_WEB
+#include <emscripten.h>
+#endif
 
-int mode = MODE_PLAY;
+int mode = MODE_TITLE;
 bool audio_offline;
 float game_s;
 uint64_t ticks;
+uint32_t world_seed;
+bool want_new_game, want_continue, want_quit;
+float audio_volume = 1;
 
 static uint32_t rng = 0x9e3779b9;
-static float mode_s;
 
 uint32_t rnd(void)
 {
@@ -23,108 +30,77 @@ uint32_t rnd(void)
 
 float frand(float a, float b) { return a + (b - a) * (rnd() >> 8) * (1.0f / 16777216.0f); }
 
-// scripted input: "<seconds> <cmd> [args]" per line, for tests and footage
-typedef struct { float t; char cmd[16]; char arg[48]; float x, y, v[7]; } Cue;
-static Cue *cues;
-static int ncues, next_cue;
-static Input script_in;
-static float script_look_x, script_look_y;
-static uint16_t script_tap;
+void hud_log_stop(const char *name, float km);
+void player_init(void);
+void render_set_quality(int q);
 
-static const char *btn_names[] = { "fire", "aim", "jump", "sprint", "enter", "reload", "next", "prev",
-                                   "horn", "map", "pause", "cam", "radio", "crouch" };
+// ---------------------------------------------------------------- settings
 
-static uint16_t btn_bit(const char *name)
+void settings_save(void)
 {
-    for (int i = 0; i < 14; i++)
-        if (!strcmp(name, btn_names[i])) return 1 << i;
-    fprintf(stderr, "script: unknown button %s\n", name);
-    return 0;
+    char b[256];
+    snprintf(b, sizeof b, "quality=%d\ntilt_steer=%d\ntilt_walk=%d\ntilt_invert=%d\ntilt_sens=%.2f\nvolume=%.2f\n",
+             quality, tilt_steer, tilt_walk, tilt_invert, tilt_sens, audio_volume);
+    plat_put("settings", b);
 }
 
-static void load_script(const char *path)
+static void settings_load(void)
 {
-    FILE *f = fopen(path, "r");
-    if (!f) { fprintf(stderr, "can't open %s\n", path); exit(1); }
-    char line[128];
-    cues = calloc(4096, sizeof *cues);
-    while (fgets(line, sizeof line, f) && ncues < 4096) {
-        Cue c = {0};
-        if (line[0] == '#' || sscanf(line, "%f %15s", &c.t, c.cmd) < 2) continue;
-        sscanf(line, "%*f %*s %47s", c.arg);
-        sscanf(line, "%*f %*s %f %f", &c.x, &c.y);
-        sscanf(line, "%*f %*s %f %f %f %f %f %f %f", &c.v[0], &c.v[1], &c.v[2], &c.v[3], &c.v[4], &c.v[5], &c.v[6]);
-        cues[ncues++] = c;
-    }
-    fclose(f);
+    char *t = plat_get("settings");
+    if (!t) return;
+    int q, a, b, c;
+    float s, v;
+    char *p;
+    if ((p = strstr(t, "quality=")) && sscanf(p, "quality=%d", &q) == 1) quality = q < 0 ? 0 : q > 2 ? 2 : q;
+    if ((p = strstr(t, "tilt_steer=")) && sscanf(p, "tilt_steer=%d", &a) == 1) tilt_steer = a;
+    if ((p = strstr(t, "tilt_walk=")) && sscanf(p, "tilt_walk=%d", &b) == 1) tilt_walk = b;
+    if ((p = strstr(t, "tilt_invert=")) && sscanf(p, "tilt_invert=%d", &c) == 1) tilt_invert = c;
+    if ((p = strstr(t, "tilt_sens=")) && sscanf(p, "tilt_sens=%f", &s) == 1) tilt_sens = s;
+    if ((p = strstr(t, "volume=")) && sscanf(p, "volume=%f", &v) == 1) audio_volume = v;
+    free(t);
 }
 
-static const char *shot_dir = "runs";
-static int shot_w, shot_h;
-static bool want_shot;
-static char shot_name[64];
-
-// script time keeps running while paused, game_s doesn't
-static float script_s;
-
-static bool script_step(Input *in)
-{
-    script_tap = 0;
-    while (next_cue < ncues && cues[next_cue].t <= script_s + 1e-4f) {
-        Cue *c = &cues[next_cue++];
-        if (!strcmp(c->cmd, "move")) { script_in.mx = c->x; script_in.my = c->y; }
-        else if (!strcmp(c->cmd, "look")) { script_look_x = c->x; script_look_y = c->y; }
-        else if (!strcmp(c->cmd, "hold")) script_in.held |= btn_bit(c->arg);
-        else if (!strcmp(c->cmd, "release")) script_in.held &= ~btn_bit(c->arg);
-        else if (!strcmp(c->cmd, "tap")) script_tap |= btn_bit(c->arg);
-        else if (!strcmp(c->cmd, "hours")) day_hours = c->x;
-        else if (!strcmp(c->cmd, "shot")) { want_shot = true; snprintf(shot_name, sizeof shot_name, "%s", c->arg); }
-        else if (!strcmp(c->cmd, "teleport")) { peds[PLAYER].pos = (Vector3){ c->x, 0, c->y }; }
-        else if (!strncmp(c->cmd, "drone", 5)) drone_cmd(c->cmd, c->v);
-        else if (!strcmp(c->cmd, "end")) return false;
-    }
-    *in = script_in;
-    in->lx = script_look_x * DT;
-    in->ly = script_look_y * DT;
-    in->held |= script_tap;
-    in->hit = script_tap;
-    script_s += DT;
-    return true;
-}
+// ---------------------------------------------------------------- input
 
 static uint16_t last_held;
 
 static Input read_input(void)
 {
-    Input in = {0};
-    if (IsKeyDown(KEY_D)) in.mx += 1;
-    if (IsKeyDown(KEY_A)) in.mx -= 1;
-    if (IsKeyDown(KEY_W)) in.my += 1;
-    if (IsKeyDown(KEY_S)) in.my -= 1;
-    // the first frames after the cursor is captured report one big jump, which spun the camera
-    static int settle;
-    static bool was_hidden;
-    if (IsCursorHidden() != was_hidden) { was_hidden = IsCursorHidden(); settle = 3; }
-    Vector2 md = settle > 0 ? (Vector2){0} : GetMouseDelta();
-    if (settle > 0) settle--;
-    in.lx = md.x * 0.0025f;
-    in.ly = md.y * 0.0025f;
-
+    Input in = { 0 };
+    if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT)) in.mx += 1;
+    if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT)) in.mx -= 1;
+    if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP)) in.my += 1;
+    if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN)) in.my -= 1;
     uint16_t h = 0;
-    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) h |= BTN_FIRE;
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) h |= BTN_AIM;
+    bool touch = is_touch_device() || GetTouchPointCount() > 0;
+    if (!touch) {
+        static int settle;
+        static bool was_hidden;
+        if (IsCursorHidden() != was_hidden) { was_hidden = IsCursorHidden(); settle = 3; }
+        Vector2 md = settle > 0 || !IsCursorHidden() ? (Vector2){ 0 } : GetMouseDelta();
+        if (settle > 0) settle--;
+        in.lx = md.x * 0.0025f;
+        in.ly = md.y * 0.0025f;
+        if (IsCursorHidden()) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) h |= BTN_FIRE;
+            if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) h |= BTN_AIM;
+            if (GetMouseWheelMove() < 0) h |= BTN_NEXT;
+            if (GetMouseWheelMove() > 0) h |= BTN_PREV;
+        }
+    }
     if (IsKeyDown(KEY_SPACE)) h |= BTN_JUMP;
     if (IsKeyDown(KEY_LEFT_SHIFT)) h |= BTN_SPRINT;
     if (IsKeyDown(KEY_F) || IsKeyDown(KEY_ENTER)) h |= BTN_ENTER;
     if (IsKeyDown(KEY_R)) h |= BTN_RELOAD;
-    if (IsKeyDown(KEY_E) || GetMouseWheelMove() < 0) h |= BTN_NEXT;
-    if (IsKeyDown(KEY_Q) || GetMouseWheelMove() > 0) h |= BTN_PREV;
+    if (IsKeyDown(KEY_Q)) h |= BTN_NEXT;
+    if (IsKeyDown(KEY_E)) h |= BTN_USE;
     if (IsKeyDown(KEY_H)) h |= BTN_HORN;
     if (IsKeyDown(KEY_M)) h |= BTN_MAP;
-    if (IsKeyDown(KEY_ESCAPE) || IsKeyDown(KEY_P)) h |= BTN_PAUSE;
+    if (IsKeyDown(KEY_ESCAPE) || IsKeyDown(KEY_P) || IsKeyDown(KEY_BACK)) h |= BTN_PAUSE;
     if (IsKeyDown(KEY_V)) h |= BTN_CAM;
-    if (IsKeyDown(KEY_TAB)) h |= BTN_RADIO;
+    if (IsKeyDown(KEY_TAB) || IsKeyDown(KEY_I)) h |= BTN_BAG;
     if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_C)) h |= BTN_CROUCH;
+    if (IsKeyDown(KEY_L)) h |= BTN_LIGHTS;
 
     if (IsGamepadAvailable(0)) {
         float sx = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_X), sy = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
@@ -143,260 +119,308 @@ static Input read_input(void)
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) h |= BTN_JUMP;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_UP)) h |= BTN_ENTER;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_LEFT)) h |= BTN_RELOAD;
-        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT)) h |= BTN_SPRINT;
+        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT)) h |= BTN_USE;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_TRIGGER_1)) h |= BTN_NEXT;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_TRIGGER_1)) h |= BTN_PREV;
-        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_THUMB)) h |= BTN_HORN;
-        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_LEFT)) h |= BTN_MAP;
+        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_THUMB)) h |= BTN_SPRINT;
+        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_LEFT)) h |= BTN_BAG;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) h |= BTN_PAUSE;
         if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_RIGHT_THUMB)) h |= BTN_CAM;
-        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_RIGHT)) h |= BTN_RADIO;
+        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_UP)) h |= BTN_LIGHTS;
+        if (IsGamepadButtonDown(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN)) h |= BTN_HORN;
     }
     in.held = h;
-    in.hit = h & ~last_held;
-    last_held = h;
     return in;
 }
+
+// ---------------------------------------------------------------- trips
 
 void respawn(Vector3 at)
 {
     Ped *p = &peds[PLAYER];
-    if (p->car >= 0) { cars[p->car].driver = -1; p->car = -1; }
     p->pos = at;
-    p->vel = (Vector3){0};
+    p->vel = (Vector3){ 0 };
     p->health = 100;
-    p->armor = 0;
     p->state = PS_IDLE;
     weapon_stow();
-    cops_reset();
     mode = MODE_PLAY;
+}
+
+static Vector3 stop_local(const Stop *s, float x, float z)
+{
+    float c = cosf(s->yaw), sn = sinf(s->yaw);
+    Vector3 p = { s->p.x + x * c + z * sn, 0, s->p.z - x * sn + z * c };
+    p.y = ground_y(p.x, p.z);
+    return p;
+}
+
+void new_game(uint32_t seed)
+{
+    world_seed = seed;
+    rng = seed * 2654435761u + 1;
+    memset(cars, 0, sizeof cars);
+    for (int i = 0; i < MAX_PEDS; i++) peds[i].used = false;
+    peds[PLAYER].health = 100;
+    raiders_reset();
+    data_load();
+    survive_reset(seed);
+    world_build(seed);
+    // start on the road, beside the first gas station
+    Vector3 dir;
+    Vector3 at = road_at(world_start_s(), &dir);
+    peds[PLAYER].pos = at;
+    player_init();
+    world_stream_all();
+    int gas = -1;
+    for (int i = 0; i < MAX_STOPS; i++) if (stops[i].used && stops[i].kind == STOP_GAS && stops[i].km < 0.6f) gas = i;
+    float yaw = atan2f(dir.x, dir.z);
+    Vector3 car_at = Vector3Add(at, (Vector3){ dir.z * -6, 0, -dir.x * -6 });
+    float car_yaw = yaw;
+    if (gas >= 0) {
+        Stop *s = &stops[gas];
+        car_at = stop_local(s, -4.0f, 3.2f);
+        car_yaw = s->yaw + PI * 0.5f;
+        peds[PLAYER].pos = stop_local(s, -4.0f, 0.6f);
+        peds[PLAYER].yaw = s->yaw + PI;
+        hud_log_stop(s->name, 0);
+        s->visited = true;
+    }
+    int ci = car_spawn(CAR_WAGON, car_at, car_yaw, AI_NONE);
+    if (ci >= 0) {
+        Car *c = &cars[ci];
+        c->fuel = c->fuel_max * 0.55f;
+        c->engine = 88; c->battery = 90; c->radiator = 80;
+        for (int w = 0; w < 4; w++) c->tire[w] = 80 + w * 3;
+        c->paint = (Color){ 176, 96, 52, 255 };
+        c->owned = true;
+        sv.home_car = ci;
+    }
+    peds[PLAYER].pos.y = ground_y(peds[PLAYER].pos.x, peds[PLAYER].pos.z);
+    extern float cam_yaw;
+    cam_yaw = peds[PLAYER].yaw;
+    day_hours = 8.0f;
+    game_s = 0;
+    ticks = 0;
+    weapon_stow();
 }
 
 static void tick(const Input *in)
 {
-    if (mode == MODE_PAUSE) {
-        if (in->hit & BTN_PAUSE) mode = MODE_PLAY;
-        return;
-    }
-    if (mode == MODE_PLAY && (in->hit & BTN_PAUSE)) { mode = MODE_PAUSE; return; }
-
     world_tick(DT);
     peds_tick(in, DT);
     cars_tick(DT);
     combat_tick(in, DT);
-    jobs_tick(in, DT);
-    missions_tick(in, DT);
-    cops_tick(DT);
+    raiders_tick(DT);
+    survive_tick(DT);
     fx_tick(DT);
     audio_tick(DT);
     camera_update(in, DT);
-
-    if (mode == MODE_DEAD || mode == MODE_BUSTED) {
-        mode_s += DT;
-        if (mode_s > 4.5f) {
-            int fee = mode == MODE_DEAD ? 500 : 250;
-            cash = cash > fee ? cash - fee : 0;
-            respawn(mode == MODE_DEAD ? hospital_pos : police_pos);
-        }
-    } else mode_s = 0;
-
+    day_hours += DT / 60.0f;
+    if (day_hours >= 24) day_hours -= 24;
     game_s += DT;
     ticks++;
-}
-
-// pipes raw frames to ffmpeg, writes the mixer's output alongside, muxes at the end
-typedef struct { FILE *video, *audio; char path[256], wav[256]; int w, h, fps; long samples; } Recorder;
-
-static void wav_header(FILE *f, long samples)
-{
-    int32_t data = (int32_t)(samples * 4), riff = data + 36, fmt = 16, rate = 44100, byterate = rate * 4;
-    int16_t pcm = 1, ch = 2, align = 4, bits = 16;
-    fseek(f, 0, SEEK_SET);
-    fwrite("RIFF", 1, 4, f); fwrite(&riff, 4, 1, f); fwrite("WAVEfmt ", 1, 8, f);
-    fwrite(&fmt, 4, 1, f); fwrite(&pcm, 2, 1, f); fwrite(&ch, 2, 1, f); fwrite(&rate, 4, 1, f);
-    fwrite(&byterate, 4, 1, f); fwrite(&align, 2, 1, f); fwrite(&bits, 2, 1, f);
-    fwrite("data", 1, 4, f); fwrite(&data, 4, 1, f);
-}
-
-static void rec_open(Recorder *r, const char *path, int w, int h, int fps)
-{
-    char cmd[512];
-    snprintf(r->path, sizeof r->path, "%s", path);
-    snprintf(r->wav, sizeof r->wav, "%s.wav", path);
-    r->w = w; r->h = h; r->fps = fps;
-    snprintf(cmd, sizeof cmd, "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgba -s %dx%d -r %d -i - "
-             "-vf vflip -c:v libx264 -preset medium -crf 16 -pix_fmt yuv420p '%s.noaudio.mp4'", w, h, fps, path);
-    r->video = popen(cmd, "w");
-    r->audio = fopen(r->wav, "wb");
-    wav_header(r->audio, 0);
-}
-
-static void rec_frame(Recorder *r, unsigned int tex)
-{
-    unsigned char *px = rlReadTexturePixels(tex, r->w, r->h, RL_PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
-    fwrite(px, 4, (size_t)r->w * r->h, r->video);
-    RL_FREE(px);
-
-    static float buf[44100 * 2];
-    long want = (long)(44100.0 * (r->samples / 44100.0 + 1.0 / r->fps) + 0.5) - r->samples;
-    audio_render(buf, (int)want);
-    static int16_t pcm[44100 * 2];
-    for (long i = 0; i < want * 2; i++) pcm[i] = (int16_t)(Clamp(buf[i], -1, 1) * 32767);
-    fwrite(pcm, 2, want * 2, r->audio);
-    r->samples += want;
-}
-
-static void rec_close(Recorder *r)
-{
-    pclose(r->video);
-    wav_header(r->audio, r->samples);
-    fclose(r->audio);
-    char cmd[1024];
-    snprintf(cmd, sizeof cmd, "ffmpeg -y -loglevel error -i '%s.noaudio.mp4' -i '%s' -c:v copy -c:a aac -b:a 192k "
-             "-shortest '%s' && rm '%s.noaudio.mp4' '%s'", r->path, r->wav, r->path, r->path, r->wav);
-    if (system(cmd) != 0) fprintf(stderr, "mux failed for %s\n", r->path);
-}
-
-static void save_shot(RenderTexture2D rt)
-{
-    Image img = LoadImageFromTexture(rt.texture);
-    ImageFlipVertical(&img);
-    char path[256];
-    snprintf(path, sizeof path, "%s/%s.png", shot_dir, shot_name);
-    ExportImage(img, path);
-    UnloadImage(img);
-    printf("shot %s at %.2f s\n", path, game_s);
-}
-
-int main(int argc, char **argv)
-{
-    uint32_t seed = 1;
-    const char *script = NULL, *replay = NULL, *record = NULL, *save_inputs = NULL;
-    float seconds = 0, hours = 17.5f;
-    int w = 1600, h = 900;
-    bool fast = false, hidden = false;
-
-    for (int i = 1; i < argc; i++) {
-        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : "";
-        if (!strcmp(a, "--seed")) { seed = (uint32_t)atoi(v); i++; }
-        else if (!strcmp(a, "--script")) { script = v; i++; }
-        else if (!strcmp(a, "--replay")) { replay = v; i++; }
-        else if (!strcmp(a, "--save-inputs")) { save_inputs = v; i++; }
-        else if (!strcmp(a, "--record")) { record = v; i++; }
-        else if (!strcmp(a, "--seconds")) { seconds = (float)atof(v); i++; }
-        else if (!strcmp(a, "--size")) { sscanf(v, "%dx%d", &w, &h); i++; }
-        else if (!strcmp(a, "--hours")) { hours = (float)atof(v); i++; }
-        else if (!strcmp(a, "--shots")) { shot_dir = v; i++; }
-        else if (!strcmp(a, "--debug")) { debug_parse(v); i++; }
-        else if (!strcmp(a, "--fast")) fast = true;
-        else if (!strcmp(a, "--hidden")) hidden = true;
-        else { fprintf(stderr, "unknown option %s\n", a); return 1; }
+    // far from the origin: shift everything back, the world keeps its true position
+    Vector3 f = peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos;
+    if (fabsf(f.x) > 2500 || fabsf(f.z) > 2500) {
+        Vector3 d = { roundf(f.x / 256) * 256, 0, roundf(f.z / 256) * 256 };
+        world_rebase(d);
     }
-    bool offscreen = record || script || replay;
-    shot_w = w; shot_h = h;
-    audio_offline = offscreen;
+}
 
-    unsigned flags = FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT;
-    if (!fast && !record) flags |= FLAG_VSYNC_HINT;
-    if (hidden) flags |= FLAG_WINDOW_HIDDEN;
-    SetConfigFlags(flags);
-    SetTraceLogLevel(LOG_WARNING);
-    InitWindow(offscreen ? 960 : w, offscreen ? 540 : h, "Out on Parole");
-    SetExitKey(KEY_NULL);
-    if (!offscreen) DisableCursor();   // macOS shrinks a too-big window itself; SetWindowSize on retina broke raylib's sizes
+// ---------------------------------------------------------------- the frame
 
-    rng = seed * 2654435761u + 1;
-    assets_load();
-    render_init();
-    audio_init();
-    world_build(seed);
-    day_hours = hours;
-    respawn(police_pos);
-    for (int i = 0; i < 40; i++) tick(&(Input){0}); // let traffic and people spread out
-    game_s = 0;
-    ticks = 0;
+static Input pending;
+static float acc;
+static float title_t;
+static bool dead_handled;
 
-    FILE *inputs = NULL;
-    if (replay) {
-        inputs = fopen(replay, "rb");
-        if (!inputs) { fprintf(stderr, "can't open %s\n", replay); return 1; }
-    } else if (!script) {
-        // every live session is kept next to the game, so it can be replayed and filmed later
-        char path[512];
-        if (!save_inputs) {
-            const char *dir = TextFormat("%ssessions", GetApplicationDirectory());
-            MakeDirectory(dir);
-            time_t now = time(NULL);
-            char stamp[32];
-            strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", localtime(&now));
-            snprintf(path, sizeof path, "%s/%s.inp", dir, stamp);
-            save_inputs = path;
-        }
-        inputs = fopen(save_inputs, "wb");
+static void title_camera(float dt)
+{
+    title_t += dt;
+    Ped *p = &peds[PLAYER];
+    Vector3 c = sv.home_car >= 0 && cars[sv.home_car].used ? cars[sv.home_car].pos : p->pos;
+    float a = title_t * 0.06f + 0.8f;
+    cam.position = (Vector3){ c.x + sinf(a) * 11, c.y + 3.2f, c.z + cosf(a) * 11 };
+    cam.target = (Vector3){ c.x, c.y + 1.0f, c.z };
+    cam.up = (Vector3){ 0, 1, 0 };
+    cam.fovy = 50;
+}
+
+static void start_play(void)
+{
+    mode = MODE_PLAY;
+    ui_screen = UI_NONE;
+    dead_handled = false;
+    tilt_calibrate();
+    acc = 0;
+    memset(&pending, 0, sizeof pending);
+    // a few quiet ticks so the camera and the people settle
+    Input none = { 0 };
+    for (int i = 0; i < 4; i++) tick(&none);
+}
+
+static void frame(void)
+{
+    Input now = read_input();
+    hud_touch_update(&now, GetScreenWidth(), GetScreenHeight());
+    now.hit = now.held & ~last_held;
+    last_held = now.held;
+    hud_input(&now);
+
+    if (want_new_game) {
+        want_new_game = false;
+        game_delete_save();
+        new_game((uint32_t)time(NULL) ^ (uint32_t)(GetTime() * 1000003));
+        start_play();
+        hud_big("The road goes on", 3);
     }
-    if (script) load_script(script);
-    if (script && save_inputs) inputs = fopen(save_inputs, "wb");   // turns a script into a replay, for testing
+    if (want_continue) {
+        want_continue = false;
+        if (game_load()) start_play();
+        else hud_msg("That save could not be read", 3);
+    }
 
-    Recorder rec = {0};
-    RenderTexture2D rt = {0};
-    if (offscreen) rt = LoadRenderTexture(shot_w, shot_h);
-    if (record) rec_open(&rec, record, shot_w, shot_h, TICK_HZ);
-
-    float acc = 0;
-    while (!WindowShouldClose()) {
-        if (offscreen) {
-            Input in = {0};
-            if (script && !script_step(&in)) break;
-            if (script && inputs) fwrite(&in, sizeof in, 1, inputs);
-            if (replay && fread(&in, sizeof in, 1, inputs) != 1) break;
-            tick(&in);
-            if (seconds > 0 && game_s >= seconds) break;
-
-            if (record || want_shot) {
-                BeginTextureMode(rt);
-                render_frame(shot_w, shot_h);
-                debug_draw();
-                hud_draw(shot_w, shot_h);
-                EndTextureMode();
-                if (record) rec_frame(&rec, rt.texture.id);
-                if (want_shot) { save_shot(rt); want_shot = false; }
-            }
-            if (!fast || ticks % 30 == 0) {   // keep the window alive, show progress
-                BeginDrawing();
-                ClearBackground(BLACK);
-                if (rt.id) DrawTexturePro(rt.texture, (Rectangle){ 0, 0, shot_w, -shot_h },
-                                          (Rectangle){ 0, 0, GetScreenWidth(), GetScreenHeight() }, (Vector2){0}, 0, WHITE);
-                DrawText(TextFormat("%.1f s", game_s), 10, 10, 20, YELLOW);
-                EndDrawing();
-            }
-            continue;
-        }
-
-        // frames and ticks don't line up, so input piles up until a tick eats it
-        static Input pending;
-        Input now = read_input();
+    if (mode == MODE_TITLE) {
+        title_camera(GetFrameTime());
+        world_tick(0);
+        fx_tick(GetFrameTime() * 0.5f);
+        audio_tick(GetFrameTime());
+        if (IsCursorHidden()) EnableCursor();
+    } else {
         pending.mx = now.mx; pending.my = now.my; pending.held = now.held;
         pending.lx += now.lx; pending.ly += now.ly; pending.hit |= now.hit;
         acc += fminf(GetFrameTime(), 0.1f);
+        bool paused = ui_screen != UI_NONE;
+        if (paused) { acc = 0; pending.lx = pending.ly = 0; pending.hit = 0; audio_tick(0); }
         while (acc >= DT) {
-            if (inputs) fwrite(&pending, sizeof pending, 1, inputs);
             tick(&pending);
             pending.lx = pending.ly = 0;
             pending.hit = 0;
             acc -= DT;
         }
-        if (mode == MODE_PAUSE) EnableCursor(); else if (IsCursorHidden() == false) DisableCursor();
-        if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+        if (mode == MODE_DEAD && !dead_handled) {
+            dead_handled = true;
+            game_delete_save();
+            int best = 0;
+            char *t = plat_get("best_km");
+            if (t) { best = atoi(t); free(t); }
+            if ((int)(sv.km * 10) > best) { char b[32]; snprintf(b, sizeof b, "%d", (int)(sv.km * 10)); plat_put("best_km", b); }
+        }
+        // the mouse is captured while driving or walking, freed in menus
+        bool want_cursor = paused || mode == MODE_DEAD || is_touch_device();
+        if (want_cursor && IsCursorHidden()) EnableCursor();
+#if defined(PLATFORM_DESKTOP)
+        if (!want_cursor && !IsCursorHidden() && IsWindowFocused()) DisableCursor();
+#else
+        if (!want_cursor && !IsCursorHidden() && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) DisableCursor();
+#endif
+    }
+#if defined(PLATFORM_DESKTOP)
+    if (IsKeyPressed(KEY_F11)) ToggleBorderlessWindowed();
+#endif
 
+    BeginDrawing();
+    render_frame(GetScreenWidth(), GetScreenHeight());
+    hud_draw(GetScreenWidth(), GetScreenHeight());
+    EndDrawing();
+}
+
+// ---------------------------------------------------------------- headless shots for testing: --shot file --at seconds
+
+static void shot(const char *path)
+{
+    Image img = LoadImageFromScreen();
+    ExportImage(img, path);
+    UnloadImage(img);
+}
+
+int main(int argc, char **argv)
+{
+    uint32_t seed = 0;
+    int w = 1280, h = 720;
+    const char *shot_path = NULL, *script = NULL;
+    float shot_at = 5;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : "";
+        if (!strcmp(a, "--seed")) { seed = (uint32_t)atoi(v); i++; }
+        else if (!strcmp(a, "--size")) { sscanf(v, "%dx%d", &w, &h); i++; }
+        else if (!strcmp(a, "--shot")) { shot_path = v; i++; }
+        else if (!strcmp(a, "--at")) { shot_at = (float)atof(v); i++; }
+        else if (!strcmp(a, "--play")) script = v[0] && v[0] != '-' ? (i++, v) : "drive";
+        else if (!strcmp(a, "--quality")) { quality = atoi(v); i++; }
+    }
+#if defined(PLATFORM_ANDROID)
+    quality = 0;
+#elif defined(PLATFORM_WEB)
+    quality = 1;
+#endif
+    settings_load();
+    unsigned flags = FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT;
+#if defined(PLATFORM_ANDROID)
+    flags = FLAG_FULLSCREEN_MODE | FLAG_VSYNC_HINT;
+#endif
+    SetConfigFlags(flags);
+    SetTraceLogLevel(LOG_WARNING);
+    InitWindow(w, h, "Long Road");
+    SetExitKey(KEY_NULL);
+    SetTargetFPS(shot_path ? 0 : 60);
+    platform_init();
+    assets_load();
+    render_init();
+    audio_init();
+    data_load();
+    new_game(seed ? seed : (uint32_t)time(NULL));
+    mode = MODE_TITLE;
+
+    if (shot_path) {
+        // test mode: optionally play, then save a frame
+        bool play = script != NULL;
+        if (play) start_play();
+        int frames = (int)(shot_at * 60);
+        for (int f = 0; f < frames && !WindowShouldClose(); f++) {
+            Input in = { 0 };
+            if (play) {
+                if (!strcmp(script, "drive")) {
+                    if (peds[PLAYER].car < 0 && f % 30 == 0 && f < 300) in.held |= BTN_ENTER, in.hit |= BTN_ENTER;
+                    if (peds[PLAYER].car >= 0) {
+                        in.my = 1;
+                        float s;
+                        float off = road_offset(cars[peds[PLAYER].car].pos.x, cars[peds[PLAYER].car].pos.z, &s);
+                        Vector3 d; road_at(s + 15, &d);
+                        Vector3 cf = car_fwd(&cars[peds[PLAYER].car]);
+                        float err = atan2f(d.x, d.z) - atan2f(cf.x, cf.z);
+                        while (err > PI) err -= 2 * PI;
+                        while (err < -PI) err += 2 * PI;
+                        in.mx = Clamp(-err * 2.5f + (off + 1.8f) * 0.08f, -1, 1);
+                    }
+                } else if (!strcmp(script, "walk")) {
+                    in.my = f > 60 ? 0.8f : 0;
+                }
+                tick(&in);
+            } else { title_camera(DT); world_tick(0); }
+            if (f % 4 == 0 || f == frames - 1) {
+                BeginDrawing();
+                render_frame(GetScreenWidth(), GetScreenHeight());
+                hud_draw(GetScreenWidth(), GetScreenHeight());
+                EndDrawing();
+            }
+        }
         BeginDrawing();
         render_frame(GetScreenWidth(), GetScreenHeight());
-        debug_draw();
         hud_draw(GetScreenWidth(), GetScreenHeight());
+        rlDrawRenderBatchActive();
+        shot(shot_path);
         EndDrawing();
+        CloseWindow();
+        return 0;
     }
 
-    if (record) rec_close(&rec);
-    if (inputs) fclose(inputs);
+#ifdef PLATFORM_WEB
+    emscripten_set_main_loop(frame, 0, 1);
+#else
+    while (!WindowShouldClose() && !want_quit) frame();
+    if (mode == MODE_PLAY) game_save();
     CloseWindow();
+#endif
     return 0;
 }

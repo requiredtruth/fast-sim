@@ -6,7 +6,6 @@
 
 Ped peds[MAX_PEDS];
 
-#define WALKERS 45
 #define SPEED_WALK 1.5f
 #define SPEED_JOG 3.5f
 #define SPEED_SPRINT 5.8f
@@ -60,15 +59,17 @@ static void make_look(Ped *p)
     p->pal[R_EYES] = rgb(34, 24, 20);
 }
 
+// raiders: dark leathers, a cap or a shaved head, some colour on the shirt
 static void cop_look(Ped *p)
 {
-    p->body = BODY_MALE;
-    p->hair = HAIR_CAP;
+    static const Color jackets[] = { { 34, 30, 28, 255 }, { 60, 40, 28, 255 }, { 50, 54, 40, 255 }, { 120, 30, 26, 255 } };
+    p->body = rnd() % 5 == 0 ? BODY_FEMALE : BODY_MALE;
+    p->hair = rnd() & 1 ? HAIR_CAP : (p->body == BODY_MALE ? HAIR_BEARD : HAIR_BUNS);
     p->pal[R_SKIN] = PICK(skins);
-    p->pal[R_SHIRT] = rgb(24, 34, 62);
-    p->pal[R_PANTS] = rgb(20, 26, 44);
-    p->pal[R_SHOES] = rgb(18, 18, 20);
-    p->pal[R_HAIR] = rgb(22, 30, 54);
+    p->pal[R_SHIRT] = PICK(jackets);
+    p->pal[R_PANTS] = rgb(30, 30, 34);
+    p->pal[R_SHOES] = rgb(40, 30, 22);
+    p->pal[R_HAIR] = p->hair == HAIR_CAP ? rgb(140, 24, 20) : PICK(hairs);
     p->pal[R_EYES] = rgb(34, 24, 20);
 }
 
@@ -293,7 +294,7 @@ void ped_alarm(Vector3 at, float radius, int source)
             else { p->state = PS_FLEE; p->node = p->next_node = -1; }
             if (screams < 2 && scream_cd <= 0 && r > 50) {
                 if (r % 3 == 0) sfx(S_SCREAM, p->pos, 0.8f, frand(0.85f, 1.3f));
-                else voice(r % 3 == 1 ? S_V_HELP : S_V_COPS, p->pos, 1, i);
+                else voice(S_V_HELP, p->pos, 1, i);
                 screams++;
                 scream_cd = 0.3f;
             }
@@ -377,10 +378,7 @@ static void board(int i)
     if (ci < 0 || !cars[ci].used || cars[ci].health <= 0) { p->state = PS_IDLE; return; }
     Car *c = &cars[ci];
     int d = c->driver;
-    if (d >= 0 && d != i && peds[d].used) {
-        jack(d, ci);
-        if (i == PLAYER) crime(CR_CARJACK, c->pos, d);
-    } else if (i == PLAYER && !stolen[ci] && c->ai != AI_NONE) crime(CR_CAR_THEFT, c->pos, -1);
+    if (d >= 0 && d != i && peds[d].used) jack(d, ci);
     c->driver = i;
     p->car = ci;
     p->seat = 0;
@@ -389,7 +387,14 @@ static void board(int i)
     v->sit_from = p->pos;
     v->enter_car = -1;
     v->state_s = 0;
-    if (i == PLAYER) { c->ai = AI_NONE; stolen[ci] = true; }
+    if (i == PLAYER) {
+        c->ai = AI_NONE; stolen[ci] = true;
+        c->handbrake = false;
+        if (c->key) { world_set_flag(world_key(c->key >> 12, 4, c->key & 255)); c->key = 0; }
+        c->owned = true;
+        if (sv.home_car != ci) { sv.home_car = ci; }
+        if (c->stalled) hud_msg(c->fuel <= 0 ? "Out of fuel" : c->battery <= 0 ? "Battery is dead" : "The engine won't turn over", 2.5f);
+    }
     sfx(S_DOOR, p->pos, 0.6f, 1);
 }
 
@@ -398,7 +403,8 @@ static void try_enter(int i)
     Ped *p = &peds[i];
     Priv *v = &pv[i];
     int ci = car_near(p->pos, DOOR_REACH_M);
-    if (ci < 0 || !cars[ci].used || cars[ci].health <= 0 || fabsf(car_speed(&cars[ci])) > 9) return;
+    if (ci < 0 || !cars[ci].used || cars[ci].health <= 0 || cars[ci].ai == AI_WRECK || fabsf(car_speed(&cars[ci])) > 9) return;
+    if (cars[ci].ai == AI_COP && cars[ci].driver >= 0) return;
     const CarModel *m = &car_models[cars[ci].model];
     float hw = m->size.x * 0.5f, hl = m->size.z * 0.5f, sx = m->seat.x >= 0 ? 1 : -1;
     Vector3 lp = Vector3Transform(p->pos, MatrixInvert(car_matrix(&cars[ci])));
@@ -484,6 +490,8 @@ static void player_foot(const Input *in, float dt)
         else if (mag < 0.6f) want_speed = SPEED_WALK * (mag / 0.6f);
         else want_speed = SPEED_JOG;
         if (water) want_speed = fminf(want_speed, 1.5f);
+        if (sv.rest < 10 || sv.food < 5 || sv.water < 5) want_speed = fminf(want_speed, SPEED_JOG * 0.75f);
+        if (sprint && sv.rest < 20) { want_speed = SPEED_JOG; sprint = false; }
     }
     float accel = !v->grounded ? 7 : sprint ? 14 : want_speed > Vector3Length(p->vel) ? 22 : 30;
     Vector3 hv = { p->vel.x, 0, p->vel.z };
@@ -499,8 +507,6 @@ static void player_foot(const Input *in, float dt)
 
     p->pos.x += hv.x * dt;
     p->pos.z += hv.z * dt;
-    p->pos.x = Clamp(p->pos.x, -WORLD_HALF + 2, WORLD_HALF - 2);
-    p->pos.z = Clamp(p->pos.z, -WORLD_HALF + 2, WORLD_HALF - 2);
     world_push(&p->pos, 0.32f, 1.75f);
     cars_push(&p->pos, 0.35f);
 
@@ -529,16 +535,10 @@ static void player_foot(const Input *in, float dt)
         v->vy -= FALL_G * dt;
         p->pos.y += v->vy * dt;
         v->air_s += dt;
-        if (before > -0.9f && p->pos.y <= -0.9f && water) {
-            fx_burst(FX_WATER, (Vector3){ p->pos.x, -0.9f, p->pos.z }, (Vector3){ 0, 1, 0 }, 14);
-            v->vy *= 0.5f;
-        }
+        (void)before;
         if (p->pos.y <= gy && v->vy <= 0) { p->pos.y = gy; land(p, v); }
     }
-    if (water && v->grounded && p->pos.y < -1) {
-        v->drown_s += dt;
-        if (v->drown_s > 5) ped_damage(PLAYER, 1000, (Vector3){0}, -1, -1);
-    } else v->drown_s = fmaxf(0, v->drown_s - dt * 2);
+    v->drown_s = 0;
 
     v->speed = hs;
     v->land_s = fmaxf(0, v->land_s - dt);
@@ -567,6 +567,11 @@ static void player_car(const Input *in, float dt)
     c->brake = fmaxf(-in->my, 0);
     c->handbrake = (in->held & BTN_JUMP) != 0;
     c->horn = (in->held & BTN_HORN) != 0;
+    if (in->hit & BTN_LIGHTS) { c->lights = !c->lights; sfx(S_UI, p->pos, 0.4f, 1.3f); }
+    if (c->stalled && in->my > 0.5f && (ticks % 90) == 0) {
+        hud_msg(c->fuel <= 0 ? "Out of fuel" : c->battery <= 0 ? "Battery is dead" : "The engine is shot", 2);
+        sfx(S_EMPTY, c->pos, 0.5f, 0.5f);
+    }
     p->aiming = false;
     v->speed = 0;
     anim_to(PLAYER, A_DRIVE, 0);
@@ -624,28 +629,6 @@ static void player_tick(const Input *in0, float dt)
     }
 }
 
-// ---- walking the sidewalk graph
-
-static int pick_node(int cur, int prev, bool flee, Vector3 src)
-{
-    const WalkNode *w = &walk[cur];
-    int cand[4], n = 0;
-    for (int k = 0; k < w->n; k++) {
-        if (w->nb[k] == prev && w->n > 1) continue;
-        cand[n++] = w->nb[k];
-    }
-    if (n == 0) return prev;
-    if (flee && rnd() % 4 != 0) {
-        int best = cand[0];
-        for (int k = 1; k < n; k++)
-            if (dist_xz(walk[cand[k]].p, src) > dist_xz(walk[best].p, src)) best = cand[k];
-        return best;
-    }
-    return cand[rnd() % n];
-}
-
-static bool crossing(int a, int b) { return walk[a].light >= 0 && walk[a].light == walk[b].light; }
-
 static void ground_follow(Ped *p, float dt)
 {
     float gy = ground_y(p->pos.x, p->pos.z);
@@ -659,46 +642,29 @@ static void foot_clamp(Ped *p, float dt)
     ground_follow(p, dt);
 }
 
+// out here people mill about where they live, or run from trouble
 static void graph_move(int i, float dt, float speed, bool flee)
 {
     Ped *p = &peds[i];
     Priv *v = &pv[i];
-    if (p->next_node < 0 || p->next_node >= nwalk) {
-        int n = nearest_walk(p->pos, 60);
-        if (n < 0) { if (i > 0) ped_remove(i); return; }
-        p->next_node = n; p->node = -1;
-        v->wait = false;
-    }
-    if (v->wait) {
-        if (walk_light_ok(walk[p->node].light)) v->wait = false;
-        else {
-            Vector3 dir = Vector3Subtract(walk[p->next_node].p, walk[p->node].p);
-            p->yaw = turn_to(p->yaw, atan2f(dir.x, dir.z), 6, dt);
-            p->vel = (Vector3){0};
-            return;
+    Vector3 tp;
+    if (flee) {
+        Vector3 away = Vector3Subtract(p->pos, v->src);
+        away.y = 0;
+        if (Vector3Length(away) < 0.1f) away = (Vector3){ 1, 0, 0 };
+        tp = Vector3Add(p->pos, Vector3Scale(Vector3Normalize(away), 6));
+    } else {
+        if (p->node < 0 || dist_xz(p->pos, v->wp[0]) < 0.8f) {
+            if (p->node >= 0 && rnd() % 3 == 0) { p->state = PS_IDLE; p->timer = frand(4, 12); p->vel = (Vector3){0}; p->node = -1; return; }
+            float a = frand(0, 2 * PI), r = frand(1, 9);
+            v->wp[0] = (Vector3){ p->home.x + sinf(a) * r, p->home.y, p->home.z + cosf(a) * r };
+            p->node = 1;
+            v->state_s = 0;
         }
+        tp = v->wp[0];
     }
-    Vector3 np = walk[p->next_node].p, a = p->node >= 0 ? walk[p->node].p : p->pos;
-    Vector3 dir = { np.x - a.x, 0, np.z - a.z };
-    if (Vector3Length(dir) < 0.01f) dir = (Vector3){ 0, 0, 1 };
-    dir = Vector3Normalize(dir);
-    Vector3 tp = { np.x - dir.z * v->side_off, 0, np.z + dir.x * v->side_off };
     float d = dist_xz(p->pos, tp);
-    if (dist_xz(p->pos, np) < 1.2f || d < 0.4f) {
-        int here = p->next_node, nxt = pick_node(here, p->node, flee, v->src);
-        p->node = here;
-        p->next_node = nxt;
-        if (!flee) {
-            if (crossing(here, nxt) && !walk_light_ok(walk[here].light)) v->wait = true;
-            else if (rnd() % 100 < 5 && p->state == PS_WALK) {
-                p->state = PS_IDLE;
-                p->timer = frand(3, 9);
-                v->idle_kind = rnd() % 3 == 0 ? 2 : 0;
-                p->vel = (Vector3){0};
-            }
-        }
-        return;
-    }
+    if (d < 0.05f) return;
     Vector3 want = { (tp.x - p->pos.x) / d * speed, 0, (tp.z - p->pos.z) / d * speed };
     Vector3 hv = approach((Vector3){ p->vel.x, 0, p->vel.z }, want, (flee ? 16 : 7) * dt);
     p->vel = hv;
@@ -706,9 +672,7 @@ static void graph_move(int i, float dt, float speed, bool flee)
     p->pos.z += hv.z * dt;
     if (Vector3Length(hv) > 0.2f) p->yaw = turn_to(p->yaw, atan2f(hv.x, hv.z), flee ? 12 : 7, dt);
     foot_clamp(p, dt);
-    // wedged against something: hop to the next node
-    if (v->speed < 0.2f * speed) { v->state_s += dt; if (v->state_s > 3) { p->pos.x = np.x; p->pos.z = np.z; v->state_s = 0; } }
-    else if (!flee) v->state_s = 0;
+    if (!flee) { v->state_s += dt; if (v->state_s > 8) p->node = -1; }
 }
 
 static void after_getup(int i)
@@ -860,7 +824,7 @@ static void auto_anim(int i)
     case PS_IDLE: if (p->kind == PED_CIV) return; break;
     default: break;
     }
-    if (p->state == PS_WALK && v->wait) { anim_to(i, A_IDLE, 0); v->rate = 1; return; }
+    if (p->state == PS_IDLE && p->kind == PED_COP && v->speed < 0.3f) { anim_to(i, p->role == ROLE_TRADER ? A_TALK : A_IDLE, 0); v->rate = 1; return; }
     locomote(i, v->speed, false, false);
     foot_steps(i);
 }
@@ -887,67 +851,23 @@ static void separate(void)
         }
 }
 
-// ---- keeping a crowd around
-
-static bool spawn_walker(bool boot)
+void peds_shift(Vector3 d)
 {
-    Vector3 pp = peds[PLAYER].pos;
-    for (int tries = 0; tries < 6; tries++) {
-        float a = frand(0, 2 * PI), r = boot ? frand(10, 120) : frand(70, 140);
-        int n = nearest_walk((Vector3){ pp.x + sinf(a) * r, 0, pp.z + cosf(a) * r }, 22);
-        if (n < 0) continue;
-        Vector3 np = walk[n].p;
-        float d = dist_xz(np, pp);
-        if (d < (boot ? 12 : 60) || d > 150) continue;
-        if (!boot && d < 110 && in_view(np)) continue;
-        bool crowded = false;
-        for (int k = 1; k < MAX_PEDS && !crowded; k++)
-            if (peds[k].used && dist_xz(peds[k].pos, np) < 1.5f) crowded = true;
-        if (crowded) continue;
-        int i = ped_spawn(PED_CIV, (Vector3){ np.x + frand(-0.6f, 0.6f), np.y, np.z + frand(-0.6f, 0.6f) }, frand(0, 2 * PI));
-        if (i < 0) return false;
+    for (int i = 0; i < MAX_PEDS; i++) {
         Ped *p = &peds[i];
-        p->state = PS_WALK;
-        p->node = -1;
-        p->next_node = n;
-        if (rnd() % 100 < 8) {   // a pair stood talking
-            int j = ped_spawn(PED_CIV, (Vector3){ np.x + 0.9f, np.y, np.z }, 0);
-            if (j >= 0) {
-                float t = frand(25, 70);
-                peds[i].state = peds[j].state = PS_IDLE;
-                peds[i].timer = peds[j].timer = t;
-                peds[i].target = j; peds[j].target = i;
-                pv[i].idle_kind = pv[j].idle_kind = 1;
-                peds[i].yaw = PI * 0.5f; peds[j].yaw = -PI * 0.5f;
-                peds[j].node = peds[i].node; peds[j].next_node = n;
-            }
-        }
-        return true;
+        if (!p->used) continue;
+        p->pos = Vector3Subtract(p->pos, d);
+        p->home = Vector3Subtract(p->home, d);
+        for (int k = 0; k < 11; k++) { p->rag[k] = Vector3Subtract(p->rag[k], d); p->rag_prev[k] = Vector3Subtract(p->rag_prev[k], d); }
+        pv[i].last_pos = Vector3Subtract(pv[i].last_pos, d);
+        pv[i].sit_from = Vector3Subtract(pv[i].sit_from, d);
+        pv[i].src = Vector3Subtract(pv[i].src, d);
+        if (p->state != PS_IN_CAR && p->state != PS_ENTERING) pv[i].wp[0] = Vector3Subtract(pv[i].wp[0], d);
+        pv[i].xf.m12 -= d.x; pv[i].xf.m13 -= d.y; pv[i].xf.m14 -= d.z;
     }
-    return false;
 }
 
-static void crowd(void)
-{
-    Vector3 pp = peds[PLAYER].pos;
-    int count = 0;
-    for (int i = 1; i < MAX_PEDS; i++) {
-        Ped *p = &peds[i];
-        if (!p->used || p->kind != PED_CIV) continue;
-        Priv *v = &pv[i];
-        if (p->state == PS_IN_CAR || p->state == PS_ENTERING) continue;
-        float d = dist_xz(p->pos, pp);
-        bool seen = in_view(p->pos);
-        bool dead = p->state == PS_DEAD;
-        if (d > 170 || (d > 120 && !seen) || (dead && v->dead_s > (seen && d < 40 ? 45 : 30))) { ped_remove(i); continue; }
-        if (!dead) count++;
-    }
-    int want = boot_ticks < 100 ? 8 : 2;
-    for (int k = 0; k < want && count < WALKERS; k++)
-        if (spawn_walker(boot_ticks < 100)) count++;
-}
-
-static void player_init(void)
+void player_init(void)
 {
     Ped *p = &peds[PLAYER];
     Vector3 pos = p->pos;
@@ -963,10 +883,10 @@ static void player_init(void)
     p->body = BODY_MALE;
     p->hair = HAIR_BUZZ;
     p->pal[R_SKIN] = skins[3];
-    p->pal[R_SHIRT] = rgb(200, 66, 44);
-    p->pal[R_PANTS] = rgb(44, 58, 92);
-    p->pal[R_SHOES] = rgb(226, 226, 222);
-    p->pal[R_HAIR] = hairs[6];
+    p->pal[R_SHIRT] = rgb(176, 120, 64);
+    p->pal[R_PANTS] = rgb(52, 66, 96);
+    p->pal[R_SHOES] = rgb(82, 52, 32);
+    p->pal[R_HAIR] = hairs[1];
     p->pal[R_EYES] = rgb(34, 24, 20);
     Priv *v = &pv[PLAYER];
     v->scale = 1;
@@ -1004,7 +924,6 @@ void peds_tick(const Input *in, float dt)
     for (int ci = 0; ci < MAX_CARS; ci++)
         if (!cars[ci].used) stolen[ci] = false;
     separate();
-    crowd();
     if (ticks % 6 == 0) near_misses();
     for (int i = 0; i < MAX_PEDS; i++) {
         Ped *p = &peds[i];

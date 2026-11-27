@@ -1,20 +1,21 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "ped.h"
 #include "rlgl.h"
 #include "combat.h"
-#include "cops.h"
 
-#define MAP_PX 2048
-#define MAP_M 1280.0f
+
+
+
 
 static const Color INK = { 238, 240, 244, 255 };
 static const Color DIM = { 150, 156, 168, 255 };
 static const Color ACCENT = { 255, 153, 51, 255 };
 static const Color DANGER = { 232, 64, 56, 255 };
-static const Color COPBLUE = { 72, 132, 255, 255 };
+
 static const Color STEEL = { 140, 176, 214, 255 };
 
 static Color alpha(Color c, float a) { c.a = (unsigned char)(c.a * Clamp(a, 0, 1)); return c; }
@@ -137,718 +138,1169 @@ static void text(const char *s, float x, float y, float size, Color c, int align
 
 // ---- messages
 
-typedef struct { char t[56]; float born, until; } Msg;
+typedef struct { char t[80]; float born, until; } Msg;
 static Msg msgs[4];
 static int nmsg;
-static char big_t[40];
+static char big_t[48];
 static float big_until, big_born;
 
 void hud_msg(const char *t, float secs)
 {
     if (!t || !*t) return;
-    if (nmsg > 0 && strncmp(msgs[nmsg - 1].t, t, 6) == 0 && game_s - msgs[nmsg - 1].born < 2.5f) {
+    if (nmsg > 0 && strncmp(msgs[nmsg - 1].t, t, 6) == 0 && (float)GetTime() - msgs[nmsg - 1].born < 2.5f) {
         snprintf(msgs[nmsg - 1].t, sizeof msgs[0].t, "%s", t);
-        msgs[nmsg - 1].until = game_s + secs;
+        msgs[nmsg - 1].until = (float)GetTime() + secs;
         return;
     }
     if (nmsg == 4) { memmove(msgs, msgs + 1, 3 * sizeof msgs[0]); nmsg = 3; }
     snprintf(msgs[nmsg].t, sizeof msgs[0].t, "%s", t);
-    msgs[nmsg].born = game_s;
-    msgs[nmsg].until = game_s + secs;
+    msgs[nmsg].born = (float)GetTime();
+    msgs[nmsg].until = (float)GetTime() + secs;
     nmsg++;
 }
 
 void hud_big(const char *t, float secs)
 {
     snprintf(big_t, sizeof big_t, "%s", t);
-    big_born = game_s;
-    big_until = game_s + secs;
+    big_born = (float)GetTime();
+    big_until = (float)GetTime() + secs;
 }
 
-// ---- the map: roads, buildings and water baked once into a texture
 
-static Texture2D map_tex;
-static bool map_ok;
+// ================================================================ Long Road HUD, menus and touch controls
 
-static void build_map(void)
+int ui_screen = UI_TITLE;
+bool ui_blocks_game;
+
+static float S;        // ui scale: 1 at 720 px tall
+static int W, H;
+static int sel_slot = -1, sel_cargo = -1, sel_recipe = -1;
+static float scroll_y[16];
+static bool touch_ui;  // touch controls are on screen
+
+static const Color PANEL = { 20, 22, 26, 225 };
+static const Color PANEL2 = { 34, 37, 43, 235 };
+static const Color LINE = { 255, 255, 255, 40 };
+static const Color GOOD = { 110, 200, 120, 255 };
+static const Color WARN = { 240, 190, 70, 255 };
+static const Color SAND = { 232, 196, 140, 255 };
+
+static Color hexc(int rgb) { return (Color){ (unsigned char)(rgb >> 16), (unsigned char)(rgb >> 8), (unsigned char)rgb, 255 }; }
+static Color mixc(Color a, Color b, float t)
 {
-    Color land = { 31, 35, 43, 255 }, water = { 17, 30, 46, 255 }, bld = { 54, 59, 71, 255 };
-    Color road = { 92, 99, 112, 255 }, casing = { 14, 16, 21, 255 };
-    Image img = GenImageColor(MAP_PX, MAP_PX, land);
-    Color *px = img.data;
-    float k = MAP_PX / MAP_M;
-    for (int y = 0; y < MAP_PX; y += 2)
-        for (int x = 0; x < MAP_PX; x += 2) {
-            if (!is_water((x + 1) / k - MAP_M / 2, (y + 1) / k - MAP_M / 2)) continue;
-            px[y * MAP_PX + x] = px[y * MAP_PX + x + 1] = px[(y + 1) * MAP_PX + x] = px[(y + 1) * MAP_PX + x + 1] = water;
-        }
-    static BoundingBox bb[200];
-    for (float gz = -MAP_M / 2; gz < MAP_M / 2; gz += 28)
-        for (float gx = -MAP_M / 2; gx < MAP_M / 2; gx += 28) {
-            int n = world_boxes((Vector3){ gx + 14, 0, gz + 14 }, 22, bb, 200);
-            for (int i = 0; i < n; i++) {
-                float dx = bb[i].max.x - bb[i].min.x, dz = bb[i].max.z - bb[i].min.z;
-                if (bb[i].max.y < 3.2f || dx * dz < 20) continue;
-                ImageDrawRectangle(&img, (int)((bb[i].min.x + MAP_M / 2) * k), (int)((bb[i].min.z + MAP_M / 2) * k),
-                                   (int)(dx * k) + 1, (int)(dz * k) + 1, bld);
-            }
-        }
-    for (int pass = 0; pass < 2; pass++)
-        for (int l = 0; l < nlanes; l++) {
-            Vector2 a = { (lanes[l].a.x + MAP_M / 2) * k, (lanes[l].a.z + MAP_M / 2) * k };
-            Vector2 b = { (lanes[l].b.x + MAP_M / 2) * k, (lanes[l].b.z + MAP_M / 2) * k };
-            ImageDrawLineEx(&img, a, b, pass ? 8 : 12, pass ? road : casing);
-        }
-    map_tex = LoadTextureFromImage(img);
-    UnloadImage(img);
-    GenTextureMipmaps(&map_tex);
-    SetTextureFilter(map_tex, TEXTURE_FILTER_TRILINEAR);
-    map_ok = true;
+    t = Clamp(t, 0, 1);
+    return (Color){ (unsigned char)(a.r + (b.r - a.r) * t), (unsigned char)(a.g + (b.g - a.g) * t), (unsigned char)(a.b + (b.b - a.b) * t), (unsigned char)(a.a + (b.a - a.a) * t) };
 }
 
-typedef struct { Vector2 c; float s; Vector3 w0, fwd, right; } View;   // s is pixels per metre
+// ---------------------------------------------------------------- immediate mode widgets
 
-static Vector2 to_screen(const View *v, Vector3 p)
+static Vector2 press_at;
+static bool press_live, press_used;
+
+static bool hover(Rectangle r) { return CheckCollisionPointRec(GetMousePosition(), r); }
+
+// a click: pressed and released inside the same rectangle without dragging far
+static bool clicked(Rectangle r)
 {
-    Vector3 d = Vector3Subtract(p, v->w0);
-    return (Vector2){ v->c.x + (d.x * v->right.x + d.z * v->right.z) * v->s, v->c.y - (d.x * v->fwd.x + d.z * v->fwd.z) * v->s };
+    if (press_used || !IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) return false;
+    Vector2 m = GetMousePosition();
+    if (!CheckCollisionPointRec(m, r) || !CheckCollisionPointRec(press_at, r)) return false;
+    if (Vector2Distance(m, press_at) > 24 * S) return false;
+    press_used = true;
+    sfx(S_UI, cam.position, 0.35f, 1.1f);
+    return true;
 }
 
-static Vector2 map_uv(const View *v, Vector2 s)
-{
-    float f = (v->c.y - s.y) / v->s, r = (s.x - v->c.x) / v->s;
-    Vector3 w = Vector3Add(v->w0, Vector3Add(Vector3Scale(v->fwd, f), Vector3Scale(v->right, r)));
-    return (Vector2){ (w.x + MAP_M / 2) / MAP_M, (w.z + MAP_M / 2) / MAP_M };
-}
+static void panel(Rectangle r, Color c) { DrawRectangleRounded(r, 0.06f, 6, c); DrawRectangleRoundedLinesEx(r, 0.06f, 6, fmaxf(1, S), LINE); }
 
-static void map_vertex(const View *v, Vector2 s)
+static bool button(Rectangle r, const char *label, bool on)
 {
-    Vector2 uv = map_uv(v, s);
-    rlTexCoord2f(uv.x, uv.y);
-    rlVertex2f(s.x, s.y);
-}
-
-static void map_disc(const View *v, float r)
-{
-    rlSetTexture(map_tex.id);
-    rlBegin(RL_TRIANGLES);
-    rlColor4ub(255, 255, 255, 255);
-    int n = 72;
-    for (int i = 0; i < n; i++) {
-        float a0 = i * 2 * PI / n, a1 = (i + 1) * 2 * PI / n;
-        map_vertex(v, v->c);
-        map_vertex(v, (Vector2){ v->c.x + sinf(a1) * r, v->c.y - cosf(a1) * r });
-        map_vertex(v, (Vector2){ v->c.x + sinf(a0) * r, v->c.y - cosf(a0) * r });
-    }
-    rlEnd();
-    rlSetTexture(0);
-}
-
-static void map_rect(const View *v, Rectangle r)
-{
-    rlSetTexture(map_tex.id);
-    rlBegin(RL_QUADS);
-    rlColor4ub(255, 255, 255, 255);
-    map_vertex(v, (Vector2){ r.x, r.y });
-    map_vertex(v, (Vector2){ r.x, r.y + r.height });
-    map_vertex(v, (Vector2){ r.x + r.width, r.y + r.height });
-    map_vertex(v, (Vector2){ r.x + r.width, r.y });
-    rlEnd();
-    rlSetTexture(0);
-}
-
-// ---- shapes
-
-static void shield(Vector2 c, float w, float h, Color fill, Color line, bool filled)
-{
-    Vector2 p[5] = { { c.x - w, c.y - h }, { c.x + w, c.y - h }, { c.x + w, c.y + h * 0.1f }, { c.x, c.y + h }, { c.x - w, c.y + h * 0.1f } };
-    if (filled) {
-        for (int i = 0; i < 5; i++) DrawTriangle(c, p[(i + 1) % 5], p[i], fill);
-        DrawTriangle(p[0], p[1], p[4], fill);
-    }
-    float th = fmaxf(1.2f, h * 0.1f);
-    for (int i = 0; i < 5; i++) DrawLineEx(p[i], p[(i + 1) % 5], th, line);
-}
-
-static void cross(Vector2 c, float r, float th, Color col)
-{
-    DrawLineEx((Vector2){ c.x - r, c.y }, (Vector2){ c.x + r, c.y }, th, col);
-    DrawLineEx((Vector2){ c.x, c.y - r }, (Vector2){ c.x, c.y + r }, th, col);
-}
-
-static void diamond(Vector2 c, float r, Color col)
-{
-    DrawTriangle((Vector2){ c.x - r, c.y }, (Vector2){ c.x, c.y + r }, (Vector2){ c.x, c.y - r }, col);
-    DrawTriangle((Vector2){ c.x + r, c.y }, (Vector2){ c.x, c.y - r }, (Vector2){ c.x, c.y + r }, col);
+    bool h = on && hover(r) && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    Color bg = !on ? (Color){ 40, 42, 46, 200 } : h ? (Color){ 255, 153, 51, 255 } : (Color){ 58, 62, 70, 240 };
+    DrawRectangleRounded(r, 0.25f, 6, bg);
+    DrawRectangleRoundedLinesEx(r, 0.25f, 6, fmaxf(1, S * 1.2f), on ? (Color){ 255, 255, 255, 60 } : LINE);
+    float ts = fminf(r.height * 0.42f, 22 * S);
+    while (ts > 8 * S && text_w(label, ts) > r.width - 14 * S) ts *= 0.9f;
+    text(label, r.x + r.width / 2, r.y + (r.height - ts) / 2, ts, on ? (h ? (Color){ 20, 20, 20, 255 } : INK) : DIM, 1);
+    return on && clicked(r);
 }
 
 static void bar(Rectangle r, float v, Color fill)
 {
-    DrawRectangleRec(r, (Color){ 8, 10, 14, 150 });
-    float w = r.width * Clamp(v, 0, 1);
-    if (w > 0) DrawRectangle((int)r.x, (int)r.y, (int)w, (int)r.height, fill);
-    DrawRectangleLinesEx(r, 1, (Color){ 255, 255, 255, 50 });
+    DrawRectangleRounded(r, 0.5f, 4, (Color){ 0, 0, 0, 140 });
+    Rectangle f = r;
+    f.width = r.width * Clamp(v, 0, 1);
+    if (f.width > 1) DrawRectangleRounded(f, 0.5f, 4, fill);
 }
 
-static void thousands(int v, char *out, size_t n)
+static Rectangle rect(float x, float y, float w, float h) { return (Rectangle){ x, y, w, h }; }
+
+// text that wraps inside a width; returns the height used
+static float wrap(const char *s, float x, float y, float wmax, float size, Color c)
 {
-    char t[24];
-    snprintf(t, sizeof t, "%d", v < 0 ? -v : v);
-    int len = (int)strlen(t), o = 0;
-    char buf[40];
-    if (v < 0) buf[o++] = '-';
-    for (int i = 0; i < len; i++) {
-        if (i && (len - i) % 3 == 0) buf[o++] = ',';
-        buf[o++] = t[i];
+    char line[160] = { 0 }, word[64];
+    float yy = y;
+    const char *p = s;
+    while (*p) {
+        int n = 0;
+        while (*p == ' ') p++;
+        while (*p && *p != ' ' && n < 63) word[n++] = *p++;
+        word[n] = 0;
+        if (!n) break;
+        char trial[200];
+        snprintf(trial, sizeof trial, "%s%s%s", line, line[0] ? " " : "", word);
+        if (text_w(trial, size) > wmax && line[0]) {
+            text(line, x, yy, size, c, 0);
+            yy += size * 1.6f;
+            snprintf(line, sizeof line, "%s", word);
+        } else snprintf(line, sizeof line, "%s", trial);
     }
-    buf[o] = 0;
-    snprintf(out, n, "$%s", buf);
+    if (line[0]) { text(line, x, yy, size, c, 0); yy += size * 1.6f; }
+    return yy - y;
 }
 
-// ---- districts, by block of the city
+// ---------------------------------------------------------------- icons, drawn from shapes
 
-static const char *district(Vector3 p)
+static void icon(int ic, Vector2 c, float s, Color col)
 {
-    static const char *layout[9] = {
-        "RRRRRRRRB", "RRRRRRRRB", "RPSSRRRRB", "RRSDDDHSB", "RRXDDDSRB", "SSSDDDSSB", "SSSSSSSSB", "IIRRPRRRB", "IIIIIIBBB",
+    Color dk = mixc(col, BLACK, 0.45f), lt = mixc(col, WHITE, 0.35f);
+    float h = s * 0.5f;
+    switch (ic) {
+    case ICON_CAN:
+        DrawRectangleRounded(rect(c.x - h * 0.6f, c.y - h * 0.8f, h * 1.2f, h * 1.6f), 0.2f, 4, col);
+        DrawRectangle((int)(c.x - h * 0.6f), (int)(c.y - h * 0.25f), (int)(h * 1.2f), (int)(h * 0.5f), lt);
+        DrawLineEx((Vector2){ c.x - h * 0.6f, c.y - h * 0.68f }, (Vector2){ c.x + h * 0.6f, c.y - h * 0.68f }, s * 0.05f, dk);
+        break;
+    case ICON_BOTTLE:
+        DrawRectangleRounded(rect(c.x - h * 0.42f, c.y - h * 0.35f, h * 0.84f, h * 1.2f), 0.3f, 4, col);
+        DrawRectangle((int)(c.x - h * 0.18f), (int)(c.y - h * 0.85f), (int)(h * 0.36f), (int)(h * 0.55f), col);
+        DrawRectangle((int)(c.x - h * 0.22f), (int)(c.y - h * 0.95f), (int)(h * 0.44f), (int)(h * 0.16f), dk);
+        DrawRectangle((int)(c.x - h * 0.3f), (int)(c.y - h * 0.1f), (int)(h * 0.18f), (int)(h * 0.7f), alpha(WHITE, 0.4f));
+        break;
+    case ICON_CROSS:
+        DrawRectangleRounded(rect(c.x - h * 0.8f, c.y - h * 0.65f, h * 1.6f, h * 1.3f), 0.2f, 4, WHITE);
+        DrawRectangle((int)(c.x - h * 0.15f), (int)(c.y - h * 0.5f), (int)(h * 0.3f), (int)(h * 1.0f), (Color){ 220, 40, 40, 255 });
+        DrawRectangle((int)(c.x - h * 0.5f), (int)(c.y - h * 0.15f), (int)(h * 1.0f), (int)(h * 0.3f), (Color){ 220, 40, 40, 255 });
+        break;
+    case ICON_JERRY:
+        DrawRectangleRounded(rect(c.x - h * 0.6f, c.y - h * 0.6f, h * 1.2f, h * 1.45f), 0.15f, 4, col);
+        DrawRectangle((int)(c.x - h * 0.4f), (int)(c.y - h * 0.85f), (int)(h * 0.5f), (int)(h * 0.28f), dk);
+        DrawLineEx((Vector2){ c.x - h * 0.5f, c.y - h * 0.4f }, (Vector2){ c.x + h * 0.5f, c.y + h * 0.75f }, s * 0.06f, dk);
+        DrawLineEx((Vector2){ c.x + h * 0.5f, c.y - h * 0.4f }, (Vector2){ c.x - h * 0.5f, c.y + h * 0.75f }, s * 0.06f, dk);
+        break;
+    case ICON_GEAR:
+        for (int i = 0; i < 8; i++) {
+            float a = i * PI / 4;
+            DrawLineEx(c, (Vector2){ c.x + cosf(a) * h * 0.9f, c.y + sinf(a) * h * 0.9f }, s * 0.16f, col);
+        }
+        DrawCircleV(c, h * 0.62f, col);
+        DrawCircleV(c, h * 0.25f, dk);
+        break;
+    case ICON_WRENCH:
+        DrawLineEx((Vector2){ c.x - h * 0.6f, c.y + h * 0.6f }, (Vector2){ c.x + h * 0.35f, c.y - h * 0.35f }, s * 0.16f, col);
+        DrawRing((Vector2){ c.x + h * 0.45f, c.y - h * 0.45f }, h * 0.18f, h * 0.38f, -60, 230, 10, col);
+        break;
+    case ICON_BULLET:
+        for (int k = -1; k <= 1; k++) {
+            float x = c.x + k * h * 0.45f;
+            DrawRectangle((int)(x - h * 0.14f), (int)(c.y - h * 0.2f), (int)(h * 0.28f), (int)(h * 0.9f), col);
+            DrawCircleV((Vector2){ x, c.y - h * 0.2f }, h * 0.14f, lt);
+            DrawRectangle((int)(x - h * 0.14f), (int)(c.y - h * 0.45f), (int)(h * 0.28f), (int)(h * 0.25f), lt);
+        }
+        break;
+    case ICON_GUN:
+        DrawRectangle((int)(c.x - h * 0.9f), (int)(c.y - h * 0.3f), (int)(h * 1.8f), (int)(h * 0.28f), col);
+        DrawRectangle((int)(c.x - h * 0.8f), (int)(c.y - h * 0.1f), (int)(h * 0.45f), (int)(h * 0.7f), dk);
+        DrawRectangle((int)(c.x - h * 0.2f), (int)(c.y - h * 0.05f), (int)(h * 0.12f), (int)(h * 0.3f), dk);
+        break;
+    case ICON_BAG:
+        DrawRectangleRounded(rect(c.x - h * 0.7f, c.y - h * 0.45f, h * 1.4f, h * 1.25f), 0.35f, 6, col);
+        DrawRing((Vector2){ c.x, c.y - h * 0.45f }, h * 0.22f, h * 0.36f, 180, 360, 10, dk);
+        DrawRectangle((int)(c.x - h * 0.5f), (int)(c.y), (int)(h * 1.0f), (int)(h * 0.12f), dk);
+        break;
+    case ICON_PLANK:
+        for (int k = 0; k < 3; k++) DrawRectangleRounded(rect(c.x - h * 0.85f + k * h * 0.12f, c.y - h * 0.6f + k * h * 0.42f, h * 1.6f, h * 0.32f), 0.4f, 4, k & 1 ? dk : col);
+        break;
+    case ICON_COIN:
+        DrawRectangleRounded(rect(c.x - h * 0.85f, c.y - h * 0.5f, h * 1.7f, h * 1.0f), 0.15f, 4, col);
+        DrawCircleV(c, h * 0.3f, lt);
+        DrawCircleV(c, h * 0.18f, col);
+        break;
+    case ICON_TIRE:
+        DrawRing(c, h * 0.45f, h * 0.9f, 0, 360, 20, (Color){ 30, 30, 30, 255 });
+        DrawRing(c, h * 0.3f, h * 0.45f, 0, 360, 16, (Color){ 160, 160, 164, 255 });
+        break;
+    case ICON_BATTERY:
+        DrawRectangleRounded(rect(c.x - h * 0.8f, c.y - h * 0.5f, h * 1.6f, h * 1.1f), 0.1f, 4, col);
+        DrawRectangle((int)(c.x - h * 0.55f), (int)(c.y - h * 0.7f), (int)(h * 0.3f), (int)(h * 0.2f), dk);
+        DrawRectangle((int)(c.x + h * 0.25f), (int)(c.y - h * 0.7f), (int)(h * 0.3f), (int)(h * 0.2f), dk);
+        text("+", c.x - h * 0.4f, c.y - h * 0.25f, h * 0.6f, WHITE, 1);
+        break;
+    case ICON_PILL:
+        DrawRectangleRounded(rect(c.x - h * 0.8f, c.y - h * 0.3f, h * 1.6f, h * 0.6f), 1, 8, col);
+        DrawRectangleRounded(rect(c.x, c.y - h * 0.3f, h * 0.8f, h * 0.6f), 1, 8, WHITE);
+        break;
+    case ICON_FLAME:
+        DrawCircleV((Vector2){ c.x, c.y + h * 0.2f }, h * 0.5f, col);
+        DrawTriangle((Vector2){ c.x, c.y - h * 0.9f }, (Vector2){ c.x - h * 0.5f, c.y + h * 0.1f }, (Vector2){ c.x + h * 0.5f, c.y + h * 0.1f }, col);
+        DrawCircleV((Vector2){ c.x, c.y + h * 0.3f }, h * 0.25f, (Color){ 255, 240, 160, 255 });
+        break;
+    case ICON_MEAT:
+        DrawEllipse((int)c.x, (int)c.y, h * 0.75f, h * 0.55f, col);
+        DrawEllipse((int)(c.x - h * 0.1f), (int)(c.y - h * 0.05f), h * 0.4f, h * 0.28f, lt);
+        DrawLineEx((Vector2){ c.x + h * 0.5f, c.y + h * 0.3f }, (Vector2){ c.x + h * 0.9f, c.y + h * 0.7f }, s * 0.08f, (Color){ 240, 230, 210, 255 });
+        break;
+    case ICON_LEAF:
+        DrawCircleV(c, h * 0.62f, col);
+        DrawLineEx((Vector2){ c.x, c.y - h * 0.6f }, (Vector2){ c.x + h * 0.15f, c.y - h * 0.95f }, s * 0.06f, (Color){ 90, 60, 30, 255 });
+        DrawEllipse((int)(c.x + h * 0.3f), (int)(c.y - h * 0.8f), h * 0.25f, h * 0.12f, (Color){ 80, 150, 60, 255 });
+        break;
+    default:
+        DrawRectangleRounded(rect(c.x - h * 0.75f, c.y - h * 0.6f, h * 1.5f, h * 1.2f), 0.15f, 4, col);
+        DrawLineEx((Vector2){ c.x - h * 0.75f, c.y - h * 0.2f }, (Vector2){ c.x + h * 0.75f, c.y - h * 0.2f }, s * 0.05f, dk);
+        break;
+    }
+}
+
+static void item_tile(Rectangle r, Slot s, bool selected, bool dim)
+{
+    Color bg = selected ? (Color){ 255, 153, 51, 90 } : (Color){ 255, 255, 255, 14 };
+    DrawRectangleRounded(r, 0.12f, 4, bg);
+    DrawRectangleRoundedLinesEx(r, 0.12f, 4, fmaxf(1, S), selected ? ACCENT : LINE);
+    if (s.n <= 0) return;
+    Item *it = &items[s.item];
+    icon(it->icon, (Vector2){ r.x + r.width / 2, r.y + r.height * 0.44f }, r.height * 0.55f, alpha(hexc(it->color), dim ? 0.4f : 1));
+    if (s.n > 1) {
+        char b[16];
+        snprintf(b, sizeof b, "%d", s.n);
+        text(b, r.x + r.width - 5 * S, r.y + r.height - 15 * S, 11 * S, INK, 2);
+    }
+}
+
+// ---------------------------------------------------------------- the in-game HUD
+
+static float smooth_fuel = -1;
+
+static void stat_row(float x, float y, int ic, Color col, float v, const char *label)
+{
+    float sz = 22 * S;
+    icon(ic, (Vector2){ x + sz / 2, y + sz / 2 }, sz, v < 0.2f ? (fmodf((float)GetTime(), 0.8f) < 0.4f ? DANGER : col) : col);
+    bar(rect(x + sz + 8 * S, y + sz * 0.3f, 120 * S, sz * 0.42f), v, v < 0.2f ? DANGER : v < 0.4f ? WARN : col);
+    (void)label;
+}
+
+static const char *clock_str(void)
+{
+    static char b[16];
+    int h = (int)day_hours, m = (int)((day_hours - h) * 60);
+    snprintf(b, sizeof b, "%02d:%02d", h, m);
+    return b;
+}
+
+static void survival_panel(void)
+{
+    Ped *p = &peds[PLAYER];
+    float x = 16 * S, y = 14 * S;
+    panel(rect(x - 8 * S, y - 6 * S, 172 * S, 152 * S), (Color){ 10, 12, 14, 150 });
+    stat_row(x, y, ICON_CROSS, (Color){ 230, 70, 60, 255 }, p->health / 100, "HEALTH");
+    stat_row(x, y + 28 * S, ICON_CAN, (Color){ 220, 170, 80, 255 }, sv.food / 100, "FOOD");
+    stat_row(x, y + 56 * S, ICON_BOTTLE, (Color){ 90, 170, 240, 255 }, sv.water / 100, "WATER");
+    stat_row(x, y + 84 * S, ICON_PILL, (Color){ 170, 150, 230, 255 }, sv.rest / 100, "REST");
+    stat_row(x, y + 112 * S, ICON_FLAME, (Color){ 240, 120, 60, 255 }, sv.warmth / 100, "WARMTH");
+    float yy = y + 146 * S;
+    if (sv.bleed > 0) { text("BLEEDING", x, yy, 13 * S, DANGER, 0); yy += 18 * S; }
+    if (sv.sick > 30) { text("SICK", x, yy, 13 * S, (Color){ 160, 220, 90, 255 }, 0); yy += 18 * S; }
+    if (pack_weight() > pack_capacity()) text("OVERLOADED", x, yy, 13 * S, WARN, 0);
+}
+
+static void world_panel(void)
+{
+    float s = road_s(peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos);
+    char b[64];
+    float x = W - 16 * S;
+    panel(rect(x - 200 * S, 8 * S, 208 * S, 86 * S), (Color){ 10, 12, 14, 150 });
+    text(clock_str(), x - 8 * S, 16 * S, 22 * S, INK, 2);
+    snprintf(b, sizeof b, "DAY %d", (int)sv.days + 1);
+    text(b, x - 192 * S, 20 * S, 14 * S, DIM, 0);
+    float t = world_temp();
+    const char *wx = weather_snow > 0.3f ? "SNOW" : weather_rain > 0.3f ? "RAIN" : weather_dust > 0.3f ? "DUST STORM" : weather_fog > 0.3f ? "FOG" : "CLEAR";
+    snprintf(b, sizeof b, "%.0f C  %s", t, wx);
+    text(b, x - 8 * S, 46 * S, 13 * S, t < 5 ? STEEL : t > 30 ? WARN : DIM, 2);
+    snprintf(b, sizeof b, "KM %.1f  %s", (s - world_start_s()) / 1000, biome_name(biome_at(s)));
+    text(b, x - 8 * S, 68 * S, 13 * S, SAND, 2);
+}
+
+// the next stop up the road, like a highway sign
+static void next_stop(void)
+{
+    Vector3 f = peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos;
+    float s0 = road_s(f);
+    int best = -1;
+    float bd = 1e9f;
+    for (int i = 0; i < MAX_STOPS; i++) {
+        if (!stops[i].used) continue;
+        float ss = road_s(stops[i].p);
+        float d = ss - s0;
+        if (d < -40 || d > 2500) continue;
+        if (d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) return;
+    char b[64];
+    if (bd < 60) snprintf(b, sizeof b, "%s", stops[best].name);
+    else snprintf(b, sizeof b, "%s  %.1f KM", stops[best].name, bd / 1000);
+    float ts = 15 * S, w = text_w(b, ts) + 30 * S;
+    Rectangle r = rect(W / 2 - w / 2, 12 * S, w, 30 * S);
+    DrawRectangleRounded(r, 0.25f, 6, (Color){ 22, 90, 50, 230 });
+    DrawRectangleRoundedLinesEx(r, 0.25f, 6, 2 * S, (Color){ 230, 240, 230, 200 });
+    text(b, W / 2, r.y + 8 * S, ts, WHITE, 1);
+    if (stops[best].hostile && stops[best].visited) text("HOSTILE", W / 2, r.y + 36 * S, 12 * S, DANGER, 1);
+}
+
+static void car_gauges(void)
+{
+    Ped *p = &peds[PLAYER];
+    if (p->car < 0 || !cars[p->car].used) return;
+    Car *c = &cars[p->car];
+    float cx = W / 2, by = H - (touch_ui ? 112 : 24) * S;
+    char b[32];
+    snprintf(b, sizeof b, "%.0f", car_kmh(c));
+    text(b, cx, by - 54 * S, 40 * S, INK, 1);
+    text("KM/H", cx, by - 8 * S, 11 * S, DIM, 1);
+    if (smooth_fuel < 0) smooth_fuel = c->fuel;
+    smooth_fuel += (c->fuel - smooth_fuel) * 0.1f;
+    float fx = cx - 210 * S;
+    icon(ICON_JERRY, (Vector2){ fx, by - 30 * S }, 22 * S, (Color){ 220, 60, 50, 255 });
+    bar(rect(fx + 16 * S, by - 36 * S, 120 * S, 12 * S), smooth_fuel / c->fuel_max, c->fuel < c->fuel_max * 0.15f ? DANGER : SAND);
+    snprintf(b, sizeof b, "%.0f L", c->fuel);
+    text(b, fx + 16 * S, by - 18 * S, 11 * S, DIM, 0);
+    float tx = cx + 90 * S;
+    text("TEMP", tx, by - 38 * S, 11 * S, DIM, 0);
+    bar(rect(tx + 44 * S, by - 38 * S, 76 * S, 10 * S), c->heat / 1.3f, c->heat > 1 ? DANGER : c->heat > 0.85f ? WARN : STEEL);
+    // warning lamps
+    float lx = tx;
+    int flat = 0;
+    for (int w = 0; w < 4; w++) if (c->tire[w] <= 0) flat++;
+    struct { bool on; const char *t; } lamps[5] = {
+        { c->engine < 30, "ENGINE" }, { flat > 0, "TYRE" }, { c->battery < 15, "BATT" }, { c->radiator < 25, "COOL" }, { c->lights, "LIGHTS" },
     };
-    if (is_water(p.x, p.z)) return "Palmera Bay";
-    int i = (int)floorf((p.x + 608) / 114.7f), j = (int)floorf((p.z + 608) / 114.7f);
-    i = i < 0 ? 0 : i > 8 ? 8 : i;
-    j = j < 0 ? 0 : j > 8 ? 8 : j;
-    switch (layout[j][i]) {
-    case 'B': return "Palmera Beach";
-    case 'I': return "Harbor Row";
-    case 'D': return "Downtown";
-    case 'H': return "Mercy Heights";
-    case 'X': return "Civic Center";
-    case 'P': return "Fairmount Park";
-    case 'S': return i < 3 ? "Old Quarter" : "Market Row";
-    default: return j < 2 ? "Cedar Hollow" : j >= 7 ? "Sunset Terrace" : i < 2 ? "Westgate" : "Orchard Hill";
+    for (int k = 0; k < 5; k++) {
+        if (!lamps[k].on) continue;
+        text(lamps[k].t, lx, by - 18 * S, 11 * S, k == 4 ? GOOD : DANGER, 0);
+        lx += text_w(lamps[k].t, 11 * S) + 10 * S;
     }
+    if (c->stalled) text(c->fuel <= 0 ? "OUT OF FUEL" : c->battery <= 0 ? "DEAD BATTERY" : "ENGINE DEAD", cx, by - 82 * S, 16 * S, DANGER, 1);
 }
 
-
-// ---- markers and the objective line
-
-static struct { Vector3 p; int kind; } marks[MAX_MARKERS];   // kind is stored plus one, 0 is empty
-static char objective[72];
-static const char mk_glyph[MK_COUNT][2] = { "M", "", "G", "R", "E", "?" };
-static const Color mk_col[MK_COUNT] = {
-    { 255, 153, 51, 255 }, { 255, 214, 64, 255 }, { 120, 200, 140, 255 },
-    { 190, 120, 230, 255 }, { 80, 190, 230, 255 }, { 238, 240, 244, 255 },
-};
-
-void marker_set(int slot, Vector3 p, int kind)
+static void weapon_box(void)
 {
-    if (slot < 0 || slot >= MAX_MARKERS) return;
-    marks[slot].p = p;
-    marks[slot].kind = kind >= 0 && kind < MK_COUNT ? kind + 1 : 0;
+    Ped *p = &peds[PLAYER];
+    if (p->car >= 0) return;
+    float x = W - 18 * S, y = H - (touch_ui ? 250 : 40) * S;
+    if (p->weapon == W_FIST) return;
+    char b[48];
+    if (p->weapon == W_BAT) snprintf(b, sizeof b, "%s", weapons[p->weapon].name);
+    else snprintf(b, sizeof b, "%s  %d / %d", weapons[p->weapon].name, p->clip_ammo, p->ammo[p->weapon]);
+    text(b, x, y, 16 * S, p->clip_ammo == 0 && p->weapon != W_BAT ? DANGER : INK, 2);
+    if (p->reload_s > 0) text("RELOADING", x, y + 22 * S, 12 * S, WARN, 2);
 }
 
-void hud_objective(const char *t)
+static void crosshair(void)
 {
-    snprintf(objective, sizeof objective, "%s", t ? t : "");
+    Ped *p = &peds[PLAYER];
+    if (p->car >= 0 || !p->aiming) return;
+    Vector2 c = { W / 2.0f, H / 2.0f };
+    Color col = aim_target >= 0 ? DANGER : WHITE;
+    float r = 9 * S, g = 4 * S;
+    DrawLineEx((Vector2){ c.x - r, c.y }, (Vector2){ c.x - g, c.y }, 2 * S, col);
+    DrawLineEx((Vector2){ c.x + g, c.y }, (Vector2){ c.x + r, c.y }, 2 * S, col);
+    DrawLineEx((Vector2){ c.x, c.y - r }, (Vector2){ c.x, c.y - g }, 2 * S, col);
+    DrawLineEx((Vector2){ c.x, c.y + g }, (Vector2){ c.x, c.y + r }, 2 * S, col);
 }
 
-static void blip(Vector2 p, int kind, float r, float S)
+static void messages(void)
 {
-    DrawCircleV(p, r + 1.5f * S, (Color){ 8, 10, 14, 235 });
-    if (kind == MK_TARGET) { diamond(p, r * 0.9f, mk_col[kind]); return; }
-    DrawCircleV(p, r, mk_col[kind]);
-    text(mk_glyph[kind], p.x, p.y - r * 0.55f, r * 1.1f, (Color){ 12, 14, 18, 255 }, 1);
-}
-
-static void beacons(int w, int h, float S)
-{
-    Ped *pl = &peds[PLAYER];
-    Vector3 pp = pl->car >= 0 && cars[pl->car].used ? cars[pl->car].pos : pl->pos;
-    Vector3 f = Vector3Subtract(cam.target, cam.position);
-    for (int i = 0; i < MAX_MARKERS; i++) {
-        int kind = marks[i].kind - 1;
-        if (kind < 0) continue;
-        float d = Vector3Distance(pp, marks[i].p);
-        if (kind >= MK_SHOP && kind != MK_STASH && d > 220) continue;
-        if (kind == MK_STASH && d > 12) continue;
-        Vector3 top = Vector3Add(marks[i].p, (Vector3){ 0, 3.2f + 0.25f * sinf(game_s * 3 + i), 0 });
-        if (Vector3DotProduct(Vector3Subtract(top, cam.position), f) < 1) continue;
-        Vector2 s = GetWorldToScreenEx(top, cam, w, h);
-        if (s.x < 0 || s.x > w || s.y < 0 || s.y > h) continue;
-        float r = Clamp(14 * S * 60 / fmaxf(d, 30), 6 * S, 14 * S);
-        Color c = mk_col[kind];
-        diamond(s, r + 2 * S, (Color){ 8, 10, 14, 220 });
-        diamond(s, r, c);
-        char n[16];
-        snprintf(n, sizeof n, "%d M", (int)d);
-        text(n, s.x, s.y + r + 6 * S, 13 * S, c, 1);
-    }
-}
-
-static void shop_panel(int w, int h, float S)
-{
-    int sel;
-    const char *name[8];
-    int price[8];
-    int n = shop_view(&sel, name, price, 8);
-    if (!n) return;
-    float pw = 330 * S, row = 38 * S, ph = (n + 2) * row + 20 * S;
-    float x = w * 0.5f - pw / 2, y = h * 0.5f - ph / 2;
-    DrawRectangle((int)x, (int)y, (int)pw, (int)ph, (Color){ 6, 8, 12, 215 });
-    DrawRectangle((int)x, (int)y, (int)(3 * S), (int)ph, ACCENT);
-    text("PAWN KINGS", x + 18 * S, y + 14 * S, 20 * S, INK, 0);
-    for (int i = 0; i < n; i++) {
-        float ry = y + 10 * S + (i + 1) * row + 8 * S;
-        bool on = i == sel, can = cash >= price[i];
-        if (on) DrawRectangle((int)(x + 8 * S), (int)(ry - 6 * S), (int)(pw - 16 * S), (int)(row - 4 * S), (Color){ 255, 153, 51, 50 });
-        char p[16];
-        snprintf(p, sizeof p, "$%d", price[i]);
-        text(name[i], x + 22 * S, ry, 17 * S, on ? INK : DIM, 0);
-        text(p, x + pw - 20 * S, ry, 17 * S, can ? (on ? INK : DIM) : DANGER, 2);
-    }
-    text("NEXT PREV PICK. ENTER BUYS", x + pw / 2, y + ph - 30 * S, 11 * S, DIM, 1);
-}
-
-static void objective_line(int w, int h, float S)
-{
-    if (!objective[0]) return;
-    float M = fmaxf(18, 30 * S), sz = 20 * S;
-    float tw = text_w(objective, sz);
-    DrawRectangle((int)(w / 2 - tw / 2 - 14 * S), (int)(M - 4 * S), (int)(tw + 28 * S), (int)(sz + 14 * S), (Color){ 6, 8, 12, 150 });
-    text(objective, w / 2.0f, M + 2 * S, sz, INK, 1);
-}
-
-// ---- the radar
-
-static float zoom_m = 90;
-
-static void radar(int w, int h, float S)
-{
-    if (!map_ok && nlanes > 0) build_map();
-    Ped *pl = &peds[PLAYER];
-    Vector3 pp = pl->car >= 0 && cars[pl->car].used ? cars[pl->car].pos : pl->pos;
-    float R = 132 * S, M = fmaxf(18, 30 * S);
-    Vector2 c = { M + R + 4 * S, h - M - R - 2 * S };
-    Vector3 f = Vector3Subtract(cam.target, cam.position);
-    f.y = 0;
-    f = Vector3Length(f) > 0.01f ? Vector3Normalize(f) : (Vector3){ 0, 0, 1 };
-    float spd = pl->car >= 0 ? fabsf(car_speed(&cars[pl->car])) : 0;
-    zoom_m += (100 + Clamp(spd, 0, 36) * 1.6f - zoom_m) * 0.06f;
-    View v = { c, R / zoom_m, pp, f, { -f.z, 0, f.x } };
-
-    DrawCircleV(c, R + 3 * S, (Color){ 6, 8, 12, 200 });
-    if (map_ok) map_disc(&v, R);
-    else DrawCircleV(c, R, (Color){ 31, 35, 43, 255 });
-
-    // everything below is clipped to the disc by hand
-    #define INSIDE(p, slack) (Vector2Distance(p, c) < R - (slack))
-    float t = game_s;
-
-    for (int i = 0; i < nshops; i++) {
-        Vector2 p = to_screen(&v, shops[i].door);
-        if (!INSIDE(p, 8 * S)) continue;
-        bool cool = game_s - shops[i].robbed_at < 300;
-        text("$", p.x, p.y - 5 * S, 10 * S, cool ? alpha(DIM, 0.7f) : ACCENT, 1);
-    }
-    PickView pk[96];
-    int np = pickups_view(pk, 96);
-    for (int i = 0; i < np; i++) {
-        Vector2 p = to_screen(&v, pk[i].pos);
-        if (!INSIDE(p, 6 * S) || pk[i].type == PK_CASH) continue;
-        if (pk[i].type == PK_HEALTH) cross(p, 3.2f * S, 1.8f * S, INK);
-        else if (pk[i].type == PK_ARMOR) cross(p, 3.2f * S, 1.8f * S, STEEL);
-        else diamond(p, 3.2f * S, alpha(INK, 0.85f));
-    }
-    // places that matter hug the rim when they are off the radar
-    Vector3 places[2] = { police_pos, hospital_pos };
-    for (int i = 0; i < 2; i++) {
-        Vector2 p = to_screen(&v, places[i]);
-        float d = Vector2Distance(p, c);
-        if (d > R - 10 * S) p = Vector2Add(c, Vector2Scale(Vector2Subtract(p, c), (R - 10 * S) / d));
-        DrawCircleV(p, 7 * S, (Color){ 8, 10, 14, 230 });
-        if (i == 0) shield(p, 4 * S, 4.6f * S, COPBLUE, COPBLUE, true);
-        else cross(p, 4 * S, 2.4f * S, INK);
-    }
-
-    for (int i = 0; i < MAX_MARKERS; i++) {
-        int kind = marks[i].kind - 1;
-        if (kind < 0 || (kind == MK_STASH && Vector3Distance(pp, marks[i].p) > 30)) continue;
-        Vector2 p = to_screen(&v, marks[i].p);
-        float d = Vector2Distance(p, c);
-        if (d > R - 10 * S) p = Vector2Add(c, Vector2Scale(Vector2Subtract(p, c), (R - 10 * S) / d));
-        blip(p, kind, 5.5f * S, S);
-    }
-
-    CopView cv[40];
-    int nc = cops_view(cv, 40);
-    if (heat_search > 0) {
-        Vector2 sc = to_screen(&v, last_seen);
-        float rad = (30 + heat_search * 2.5f) * v.s;
-        float d = Vector2Distance(sc, c);
-        if (d < R + rad) {
-            // draw the zone as a ring of short arcs that stay inside the disc
-            for (int i = 0; i < 48; i++) {
-                float a = i * 2 * PI / 48;
-                Vector2 p = { sc.x + sinf(a) * rad, sc.y - cosf(a) * rad };
-                if (INSIDE(p, 3 * S)) DrawCircleV(p, 1.6f * S, alpha(ACCENT, 0.8f));
-            }
-        }
-        for (int i = 0; i < nc; i++) {
-            if (!cv[i].searching) continue;
-            Vector2 o = to_screen(&v, cv[i].pos);
-            Color col = alpha(i % 2 ? COPBLUE : DANGER, 0.22f);
-            float yaw = cv[i].yaw;
-            Vector2 pts[6];
-            for (int k = 0; k < 6; k++) {
-                float a = yaw + (k - 2.5f) / 2.5f * 0.9f;
-                Vector3 wp = Vector3Add(cv[i].pos, (Vector3){ sinf(a) * 38, 0, cosf(a) * 38 });
-                pts[k] = to_screen(&v, wp);
-                float dd = Vector2Distance(pts[k], c);
-                if (dd > R - 2 * S) pts[k] = Vector2Add(c, Vector2Scale(Vector2Subtract(pts[k], c), (R - 2 * S) / dd));
-            }
-            if (!INSIDE(o, 0)) continue;
-            for (int k = 0; k < 5; k++) DrawTriangle(o, pts[k + 1], pts[k], col);
-        }
-    }
-    for (int i = 0; i < nc; i++) {
-        Vector2 p = to_screen(&v, cv[i].pos);
-        if (!INSIDE(p, 3 * S)) continue;
-        bool on = fmodf(t * 3 + i * 0.37f, 1) < 0.55f;
-        Color col = (i + (int)(t * 3)) % 2 ? DANGER : COPBLUE;
-        DrawCircleV(p, 4.6f * S, (Color){ 6, 8, 12, 220 });
-        DrawCircleV(p, 3.2f * S, on ? col : alpha(col, 0.45f));
-    }
-
-    // the player, pointing where the body points
-    float yaw = pl->car >= 0 && cars[pl->car].used ? atan2f(car_fwd(&cars[pl->car]).x, car_fwd(&cars[pl->car]).z) : pl->yaw;
-    float rel = atan2f(f.x, f.z) - yaw;
-    Vector2 a = { c.x + sinf(rel) * 9 * S, c.y - cosf(rel) * 9 * S };
-    Vector2 b = { c.x + sinf(rel + 2.5f) * 7 * S, c.y - cosf(rel + 2.5f) * 7 * S };
-    Vector2 d = { c.x + sinf(rel - 2.5f) * 7 * S, c.y - cosf(rel - 2.5f) * 7 * S };
-    DrawTriangle(a, d, b, INK);
-    DrawTriangleLines(a, d, b, (Color){ 0, 0, 0, 200 });
-
-    DrawRing(c, R - 1, R + 2.5f * S, 0, 360, 72, (Color){ 238, 240, 244, 200 });
-    // north
-    Vector2 np_ = to_screen(&v, (Vector3){ pp.x, 0, pp.z + 1000 });
-    Vector2 dir = Vector2Normalize(Vector2Subtract(np_, c));
-    Vector2 npos = Vector2Add(c, Vector2Scale(dir, R + 11 * S));
-    text("N", npos.x, npos.y - 5 * S, 10 * S, alpha(INK, 0.8f), 1);
-
-    // health and armour to the right of the radar
-    float bx = c.x + R + 18 * S, bw = 190 * S, bh = 9 * S;
-    float hp = pl->health / 100, ar = pl->armor / 100;
-    float hy = c.y + R * 0.18f, ay = hy + 38 * S;
-    bool low = pl->health < 30;
-    Color hc = low && fmodf(game_s * 3, 1) < 0.5f ? DANGER : ACCENT;
-    char num[16];
-    text("HEALTH", bx, hy - 17 * S, 11 * S, DIM, 0);
-    snprintf(num, sizeof num, "%d", (int)ceilf(fmaxf(pl->health, 0)));
-    text(num, bx + bw, hy - 17 * S, 11 * S, INK, 2);
-    bar((Rectangle){ bx, hy, bw, bh }, hp, hc);
-    text("ARMOR", bx, ay - 17 * S, 11 * S, DIM, 0);
-    snprintf(num, sizeof num, "%d", (int)ceilf(pl->armor));
-    text(num, bx + bw, ay - 17 * S, 11 * S, pl->armor > 0 ? INK : DIM, 2);
-    bar((Rectangle){ bx, ay, bw, bh }, ar, STEEL);
-    #undef INSIDE
-}
-
-// ---- top right: heat, money, weapon
-
-static int shown_cash = -1, last_cash, gain;
-static float shown_cash_f;
-static float gain_t;
-
-static void status(int w, int h, float S)
-{
-    Ped *pl = &peds[PLAYER];
-    float M = fmaxf(18, 30 * S), x = w - M, y = M;
-    // heat shields
-    float sw = 12 * S, sh = 14 * S, gap = 8 * S;
-    bool flash = heat_search > 0 && fmodf(game_s * 2.5f, 1) < 0.5f;
-    for (int i = 0; i < 5; i++) {
-        Vector2 c = { x - sw - (4 - i) * (2 * sw + gap), y + sh };
-        bool on = i < heat;
-        if (on && flash) shield(c, sw, sh, ACCENT, ACCENT, false);
-        else if (on) shield(c, sw, sh, ACCENT, ACCENT, true);
-        else shield(c, sw, sh, ACCENT, (Color){ 255, 255, 255, 70 }, false);
-    }
-    y += 2 * sh + 18 * S;
-
-    // money
-    if (shown_cash < 0) { shown_cash = last_cash = cash; shown_cash_f = cash; }
-    if (cash != last_cash) {
-        if (cash > last_cash) { gain = game_s - gain_t < 1.6f ? gain + cash - last_cash : cash - last_cash; gain_t = game_s; }
-        last_cash = cash;
-    }
-    // exponential catch-up off game_s, about 0.8 s to settle
-    static float cash_t = -1;
-    float cdt = cash_t < 0 ? 0 : Clamp(game_s - cash_t, 0, 0.25f);
-    cash_t = game_s;
-    float cdiff = cash - shown_cash_f;
-    shown_cash_f += cdiff * (1 - expf(-cdt * 6));
-    if (fabsf(cash - shown_cash_f) < 0.5f) shown_cash_f = cash;
-    shown_cash = (int)roundf(shown_cash_f);
-    char buf[32];
-    thousands(shown_cash, buf, sizeof buf);
-    float msize = 38 * S;
-    text(buf, x, y, msize, INK, 2);
-    if (game_s - gain_t < 1.6f && gain > 0) {
-        char g[32];
-        thousands(gain, g + 1, sizeof g - 1);
-        g[0] = '+';
-        float a = Clamp((1.6f - (game_s - gain_t)) / 0.5f, 0, 1);
-        text(g, x, y + msize + 6 * S, 17 * S, alpha(ACCENT, a), 2);
-    }
-    y += msize + 34 * S;
-
-    // weapon
-    const Weapon *wp = &weapons[pl->weapon];
-    float tw = 0;
-    char ammo[32] = "";
-    if (pl->weapon != W_FIST) {
-        snprintf(ammo, sizeof ammo, "%d", pl->clip_ammo);
-        char res[16];
-        snprintf(res, sizeof res, "/%d", pl->ammo[pl->weapon]);
-        float rs = 17 * S;
-        text(res, x, y + 8 * S, rs, DIM, 2);
-        tw = text_w(res, rs) + 6 * S;
-        text(ammo, x - tw, y, 26 * S, pl->clip_ammo == 0 ? DANGER : INK, 2);
-        tw += text_w(ammo, 26 * S) + 14 * S;
-    }
-    text(wp->name, x - tw, y + 8 * S, 15 * S, DIM, 2);
-    if (pl->reload_s > 0) {
-        float k = 1 - pl->reload_s / wp->reload_s;
-        bar((Rectangle){ x - 120 * S, y + 36 * S, 120 * S, 4 * S }, k, ACCENT);
-    }
-}
-
-// ---- messages, district, crosshair, speedometer
-
-static char dist_name[24];
-static float dist_t = -10;
-
-static void messages(int w, int h, float S)
-{
+    float now = (float)GetTime();
+    float y = H * 0.62f;
     for (int i = nmsg - 1; i >= 0; i--) {
-        Msg *m = &msgs[i];
-        float left = m->until - game_s;
-        if (left <= 0) { memmove(m, m + 1, (nmsg - i - 1) * sizeof *m); nmsg--; continue; }
+        if (now > msgs[i].until) continue;
+        float a = Clamp((msgs[i].until - now) * 2, 0, 1) * Clamp((now - msgs[i].born) * 6, 0, 1);
+        text(msgs[i].t, W / 2, y, 17 * S, alpha(INK, a), 1);
+        y -= 28 * S;
     }
-    float base = h - 190 * S;
-    for (int i = nmsg - 1, k = 0; i >= 0; i--, k++) {
-        Msg *m = &msgs[i];
-        float left = m->until - game_s, age = game_s - m->born;
-        float a = Clamp(fminf(left / 0.4f, age / 0.12f + 0.3f), 0, 1) * (k ? 0.65f : 1);
-        float size = 26 * S;
-        text(m->t, w * 0.5f, base - k * 34 * S + (1 - Clamp(age / 0.15f, 0, 1)) * 6 * S, size, alpha(INK, a), 1);
+    if (now < big_until) {
+        float a = Clamp((big_until - now) * 1.5f, 0, 1) * Clamp((now - big_born) * 3, 0, 1);
+        text(big_t, W / 2, H * 0.28f, 34 * S, alpha(SAND, a), 1);
     }
 }
 
-static void district_banner(int w, int h, float S)
+static void prompt_line(void)
 {
-    Ped *pl = &peds[PLAYER];
-    Vector3 pp = pl->car >= 0 && cars[pl->car].used ? cars[pl->car].pos : pl->pos;
-    const char *n = district(pp);
-    if (strcmp(n, dist_name)) {
-        if (game_s - dist_t > 0.5f || !dist_name[0]) dist_t = game_s;
-        if (dist_name[0] || game_s > 1) dist_t = game_s;
-        snprintf(dist_name, sizeof dist_name, "%s", n);
+    const char *pr = survive_prompt();
+    if (!pr || ui_screen != UI_NONE) return;
+    char b[96];
+    if (touch_ui) snprintf(b, sizeof b, "%s", pr);
+    else snprintf(b, sizeof b, "E  %s", pr);
+    float ts = 17 * S, w = text_w(b, ts) + 34 * S;
+    Rectangle r = rect(W / 2 - w / 2, H * 0.7f, w, 34 * S);
+    DrawRectangleRounded(r, 0.4f, 6, (Color){ 0, 0, 0, 150 });
+    text(b, W / 2, r.y + 9 * S, ts, ACCENT, 1);
+}
+
+static void search_ring(void)
+{
+    if (search_ci < 0) return;
+    Vector2 c = { W / 2.0f, H * 0.58f };
+    float k = Clamp(search_t / 1.4f, 0, 1);
+    DrawRing(c, 18 * S, 24 * S, -90, -90 + 360 * k, 32, ACCENT);
+    text("SEARCHING", c.x, c.y + 32 * S, 13 * S, INK, 1);
+}
+
+static void danger_overlay(void)
+{
+    Ped *p = &peds[PLAYER];
+    float k = p->health < 35 ? (35 - p->health) / 35 : 0;
+    if (sv.warmth < 15) k = fmaxf(k, 0.3f);
+    if (k > 0) {
+        Color edge = sv.warmth < 15 && p->health >= 35 ? (Color){ 120, 180, 255, (unsigned char)(110 * k) } : (Color){ 180, 0, 0, (unsigned char)(140 * k) };
+        float e = 120 * S;
+        DrawRectangleGradientV(0, 0, W, (int)e, edge, BLANK);
+        DrawRectangleGradientV(0, H - (int)e, W, (int)e, BLANK, edge);
+        DrawRectangleGradientH(0, 0, (int)e, H, edge, BLANK);
+        DrawRectangleGradientH(W - (int)e, 0, (int)e, H, BLANK, edge);
     }
-    float age = game_s - dist_t;
-    if (age > 4.5f || age < 0) return;
-    float a = Clamp(fminf(age / 0.35f, (4.5f - age) / 0.8f), 0, 1);
-    float M = fmaxf(18, 30 * S);
-    float xo = (1 - Clamp(age / 0.35f, 0, 1)) * -18 * S;
-    DrawRectangle((int)(M + xo), (int)(M + 2 * S), (int)(3 * S), (int)(34 * S), alpha(ACCENT, a));
-    text(dist_name, M + 14 * S + xo, M + 4 * S, 30 * S, alpha(INK, a), 0);
+    int act = raiders_active();
+    if (act > 0) text("RAIDERS", W / 2, 50 * S, 14 * S, alpha(DANGER, 0.6f + 0.4f * sinf((float)GetTime() * 6)), 1);
 }
 
-static void crosshair(int w, int h, float S)
+// ---------------------------------------------------------------- touch controls
+
+typedef struct { int id; int ctl; Vector2 start, last; bool live; } Touch;
+static Touch touches[10];
+static bool aim_toggle;
+enum { TC_NONE, TC_JOY, TC_LOOK, TC_FIRE, TC_AIM, TC_JUMP, TC_USE, TC_CAR, TC_BAG, TC_SWAP, TC_PAUSE, TC_GAS, TC_BRAKE,
+       TC_LEFT, TC_RIGHT, TC_HORN, TC_LIGHTS, TC_HAND, TC_CAM, TC_CROUCH, TC_RELOAD, TC_COUNT };
+static Vector2 tc_pos[TC_COUNT];
+static float tc_r[TC_COUNT];
+static bool tc_down[TC_COUNT];
+static Vector2 joy_c;
+static Vector2 joy_v;
+
+static void layout_touch(bool in_car)
 {
-    Ped *pl = &peds[PLAYER];
-    if (mode != MODE_PLAY || !pl->aiming || pl->car >= 0) return;
-    float rf; int rcash;
-    if (rob_view(&rf, &rcash)) {
-        float bw = 90 * S, by = h / 2.0f + 36 * S;
-        char b[24];
-        snprintf(b, sizeof b, "$%d", rcash);
-        bar((Rectangle){ w / 2.0f - bw / 2, by, bw, 6 * S }, rf, ACCENT);
-        text(b, w / 2.0f, by + 12 * S, 16 * S, INK, 1);
+    memset(tc_r, 0, sizeof tc_r);
+    float m = 26 * S, big = 52 * S, med = 38 * S, sm = 30 * S;
+    tc_pos[TC_PAUSE] = (Vector2){ W - 210 * S - 40 * S, 30 * S }; tc_r[TC_PAUSE] = 22 * S;
+    tc_pos[TC_BAG] = (Vector2){ W - 210 * S - 92 * S, 30 * S }; tc_r[TC_BAG] = 22 * S;
+    if (in_car) {
+        tc_pos[TC_GAS] = (Vector2){ W - m - big, H - m - big * 1.2f }; tc_r[TC_GAS] = big * 1.15f;
+        tc_pos[TC_BRAKE] = (Vector2){ W - m - big * 3.4f, H - m - big * 0.9f }; tc_r[TC_BRAKE] = big * 0.95f;
+        if (!tilt_steer || !tilt_available()) {
+            tc_pos[TC_LEFT] = (Vector2){ m + big, H - m - big }; tc_r[TC_LEFT] = big;
+            tc_pos[TC_RIGHT] = (Vector2){ m + big * 3.3f, H - m - big }; tc_r[TC_RIGHT] = big;
+        }
+        tc_pos[TC_CAR] = (Vector2){ W - m - sm, H * 0.42f }; tc_r[TC_CAR] = sm;
+        tc_pos[TC_USE] = (Vector2){ W - m - sm, H * 0.42f - 2.4f * sm }; tc_r[TC_USE] = sm;
+        tc_pos[TC_LIGHTS] = (Vector2){ m + sm, H * 0.42f - 2.4f * sm }; tc_r[TC_LIGHTS] = sm;
+        tc_pos[TC_HORN] = (Vector2){ m + sm, H * 0.42f }; tc_r[TC_HORN] = sm;
+        tc_pos[TC_HAND] = (Vector2){ W - m - big * 3.4f, H - m - big * 2.8f }; tc_r[TC_HAND] = sm;
+        tc_pos[TC_CAM] = (Vector2){ m + sm, H * 0.42f + 2.4f * sm }; tc_r[TC_CAM] = sm;
+    } else {
+        bool armed = peds[PLAYER].weapon != W_FIST;
+        tc_pos[TC_FIRE] = (Vector2){ W - m - big, H - m - big }; tc_r[TC_FIRE] = big;
+        tc_pos[TC_JUMP] = (Vector2){ W - m - big * 3.1f, H - m - med * 0.8f }; tc_r[TC_JUMP] = med;
+        tc_pos[TC_USE] = (Vector2){ W - m - big * 1.0f, H - m - big * 3.1f }; tc_r[TC_USE] = med;
+        tc_pos[TC_CAR] = (Vector2){ W - m - big * 3.1f, H - m - big * 2.7f }; tc_r[TC_CAR] = med;
+        tc_pos[TC_SWAP] = (Vector2){ W - m - sm, H * 0.34f }; tc_r[TC_SWAP] = sm;
+        tc_pos[TC_CROUCH] = (Vector2){ W - m - big * 3.1f - med * 2.4f, H - m - med * 0.8f }; tc_r[TC_CROUCH] = sm;
+        if (armed && peds[PLAYER].weapon != W_BAT) {
+            tc_pos[TC_AIM] = (Vector2){ W - m - big * 2.2f, H - m - big * 2.0f }; tc_r[TC_AIM] = sm;
+            tc_pos[TC_RELOAD] = (Vector2){ W - m - sm - 2.4f * sm, H * 0.34f }; tc_r[TC_RELOAD] = sm;
+        }
     }
-    bool over = aim_target >= 0 && peds[aim_target].used && peds[aim_target].state != PS_DEAD;
-    Color c = over ? DANGER : INK;
-    float cx = w / 2.0f, cy = h / 2.0f, g = 7 * S, l = 8 * S, th = fmaxf(1.5f, 2 * S);
-    Color shadow = { 0, 0, 0, 120 };
-    for (int pass = 0; pass < 2; pass++) {
-        float o = pass == 0 ? 1.2f : 0;
-        Color col = pass == 0 ? shadow : c;
-        DrawLineEx((Vector2){ cx - g - l + o, cy + o }, (Vector2){ cx - g + o, cy + o }, th, col);
-        DrawLineEx((Vector2){ cx + g + o, cy + o }, (Vector2){ cx + g + l + o, cy + o }, th, col);
-        DrawLineEx((Vector2){ cx + o, cy - g - l + o }, (Vector2){ cx + o, cy - g + o }, th, col);
-        DrawLineEx((Vector2){ cx + o, cy + g + o }, (Vector2){ cx + o, cy + g + l + o }, th, col);
-        DrawCircleV((Vector2){ cx + o, cy + o }, fmaxf(1.4f, 1.6f * S), col);
+}
+
+static int touch_hit(Vector2 p)
+{
+    for (int k = TC_FIRE; k < TC_COUNT; k++)
+        if (tc_r[k] > 0 && Vector2Distance(p, tc_pos[k]) < tc_r[k] * 1.15f) return k;
+    return TC_NONE;
+}
+
+bool hud_touch_update(Input *in, int w, int h)
+{
+    W = w; H = h; S = fminf(h / 720.0f, w / 1280.0f) * (is_touch_device() ? 1.15f : 1.0f);
+    int n = GetTouchPointCount();
+    if (n > 0) touch_ui = true;
+    if (!touch_ui) return false;
+    Ped *p = &peds[PLAYER];
+    bool in_car = p->car >= 0 && p->state == PS_IN_CAR;
+    layout_touch(in_car);
+    memset(tc_down, 0, sizeof tc_down);
+    // match touches by id
+    bool seen[10] = { 0 };
+    for (int i = 0; i < n && i < 10; i++) {
+        int id = GetTouchPointId(i);
+        Vector2 pos = GetTouchPosition(i);
+        int slot = -1;
+        for (int k = 0; k < 10; k++) if (touches[k].live && touches[k].id == id) slot = k;
+        if (slot < 0) {
+            for (int k = 0; k < 10; k++) if (!touches[k].live) { slot = k; break; }
+            if (slot < 0) continue;
+            Touch *t = &touches[slot];
+            t->live = true; t->id = id; t->start = pos; t->last = pos;
+            t->ctl = ui_screen != UI_NONE ? TC_NONE : touch_hit(pos);
+            if (t->ctl == TC_NONE && ui_screen == UI_NONE) {
+                if (!in_car && pos.x < w * 0.42f && pos.y > h * 0.3f) { t->ctl = TC_JOY; joy_c = pos; }
+                else if (pos.y > 60 * S) t->ctl = TC_LOOK;
+            }
+            if (t->ctl == TC_AIM) aim_toggle = !aim_toggle;
+            if (t->ctl == TC_PAUSE) { ui_screen = UI_PAUSE; }
+            if (t->ctl == TC_BAG) { ui_screen = UI_PACK; }
+            if (t->ctl == TC_USE) survive_interact();
+        }
+        seen[slot] = true;
+        Touch *t = &touches[slot];
+        if (t->ctl > TC_LOOK) tc_down[t->ctl] = true;
+        if (t->ctl == TC_LOOK) {
+            Vector2 d = Vector2Subtract(pos, t->last);
+            in->lx += d.x * 0.0058f / S;
+            in->ly += d.y * 0.0048f / S;
+        }
+        if (t->ctl == TC_JOY) {
+            Vector2 d = Vector2Subtract(pos, joy_c);
+            float r = 70 * S, l = Vector2Length(d);
+            if (l > r) { joy_c = Vector2Add(joy_c, Vector2Scale(d, (l - r) / l)); d = Vector2Scale(d, r / l); }
+            joy_v = Vector2Scale(d, 1 / r);
+            in->mx = joy_v.x; in->my = -joy_v.y;
+            if (Vector2Length(joy_v) > 0.97f) in->held |= BTN_SPRINT;
+        }
+        t->last = pos;
+    }
+    for (int k = 0; k < 10; k++) if (touches[k].live && !seen[k]) { touches[k].live = false; if (touches[k].ctl == TC_JOY) joy_v = (Vector2){ 0 }; }
+    bool joy = false;
+    for (int k = 0; k < 10; k++) if (touches[k].live && touches[k].ctl == TC_JOY) joy = true;
+    // tilt
+    Vector2 tl = tilt_read();
+    if (in_car) {
+        if (tilt_steer && tilt_available()) in->mx = tl.x;
+        else in->mx = (tc_down[TC_RIGHT] ? 1.0f : 0) - (tc_down[TC_LEFT] ? 1.0f : 0);
+        float gas = tc_down[TC_GAS] ? 1.0f : 0, brake = tc_down[TC_BRAKE] ? 1.0f : 0;
+        if (!gas && !brake && tilt_steer && tilt_available() && tilt_walk) { if (tl.y > 0.1f) gas = tl.y; else if (tl.y < -0.25f) brake = -tl.y; }
+        in->my = gas - brake;
+        if (tc_down[TC_HORN]) in->held |= BTN_HORN;
+        if (tc_down[TC_HAND]) in->held |= BTN_JUMP;
+        if (tc_down[TC_LIGHTS]) in->held |= BTN_LIGHTS;
+        if (tc_down[TC_CAM]) in->held |= BTN_CAM;
+        if (tc_down[TC_CAR]) in->held |= BTN_ENTER;
+    } else {
+        if (!joy && tilt_walk && tilt_available()) {
+            in->my = tl.y;
+            in->lx += tl.x * 2.2f * GetFrameTime();
+            if (tl.y > 0.95f) in->held |= BTN_SPRINT;
+        }
+        if (tc_down[TC_FIRE]) in->held |= BTN_FIRE;
+        if (aim_toggle && p->weapon != W_FIST && p->weapon != W_BAT) in->held |= BTN_AIM;
+        if (p->weapon == W_FIST || p->weapon == W_BAT) aim_toggle = false;
+        if (tc_down[TC_JUMP]) in->held |= BTN_JUMP;
+        if (tc_down[TC_CAR]) in->held |= BTN_ENTER;
+        if (tc_down[TC_SWAP]) in->held |= BTN_NEXT;
+        if (tc_down[TC_CROUCH]) in->held |= BTN_CROUCH;
+        if (tc_down[TC_RELOAD]) in->held |= BTN_RELOAD;
+    }
+    return true;
+}
+
+static void touch_button(int k, const char *label, int ic)
+{
+    if (tc_r[k] <= 0) return;
+    Vector2 c = tc_pos[k];
+    bool dn = tc_down[k] || (k == TC_AIM && aim_toggle);
+    DrawCircleV(c, tc_r[k], dn ? (Color){ 255, 153, 51, 150 } : (Color){ 0, 0, 0, 95 });
+    DrawRing(c, tc_r[k] - 2.5f * S, tc_r[k], 0, 360, 36, (Color){ 255, 255, 255, dn ? 200 : 90 });
+    if (ic >= 0) icon(ic, (Vector2){ c.x, c.y - tc_r[k] * 0.12f }, tc_r[k] * 0.7f, (Color){ 255, 255, 255, 200 });
+    float ts = fminf(tc_r[k] * 0.34f, 15 * S);
+    text(label, c.x, ic >= 0 ? c.y + tc_r[k] * 0.38f : c.y - ts / 2, ts, (Color){ 255, 255, 255, 220 }, 1);
+}
+
+static void draw_touch(void)
+{
+    if (!touch_ui || ui_screen != UI_NONE) return;
+    Ped *p = &peds[PLAYER];
+    bool in_car = p->car >= 0 && p->state == PS_IN_CAR;
+    touch_button(TC_PAUSE, "II", -1);
+    touch_button(TC_BAG, "", ICON_BAG);
+    if (in_car) {
+        touch_button(TC_GAS, "GAS", -1);
+        touch_button(TC_BRAKE, "BRAKE", -1);
+        touch_button(TC_LEFT, "<", -1);
+        touch_button(TC_RIGHT, ">", -1);
+        touch_button(TC_CAR, "EXIT", -1);
+        touch_button(TC_USE, "CAR", ICON_WRENCH);
+        touch_button(TC_LIGHTS, "LIGHTS", -1);
+        touch_button(TC_HORN, "HORN", -1);
+        touch_button(TC_HAND, "HAND", -1);
+        touch_button(TC_CAM, "CAM", -1);
+        if (tilt_steer && tilt_available()) {
+            Vector2 tl = tilt_read();
+            float cx = W * 0.25f, cy = H - 70 * S;
+            DrawRing((Vector2){ cx, cy }, 36 * S, 40 * S, 200, 340, 20, (Color){ 255, 255, 255, 70 });
+            float a = (270 + tl.x * 60) * DEG2RAD;
+            DrawCircleV((Vector2){ cx + cosf(a) * 38 * S, cy + sinf(a) * 38 * S }, 6 * S, ACCENT);
+        }
+    } else {
+        touch_button(TC_FIRE, p->weapon == W_FIST ? "PUNCH" : p->weapon == W_BAT ? "SWING" : "FIRE", p->weapon == W_FIST ? -1 : ICON_GUN);
+        touch_button(TC_AIM, "AIM", -1);
+        touch_button(TC_JUMP, "JUMP", -1);
+        touch_button(TC_USE, survive_prompt() ? "USE" : "USE", ICON_WRENCH);
+        touch_button(TC_CAR, "CAR", -1);
+        touch_button(TC_SWAP, "SWAP", -1);
+        touch_button(TC_CROUCH, "DUCK", -1);
+        touch_button(TC_RELOAD, "RELOAD", -1);
+        bool joy = false;
+        for (int k = 0; k < 10; k++) if (touches[k].live && touches[k].ctl == TC_JOY) joy = true;
+        if (joy) {
+            DrawCircleV(joy_c, 70 * S, (Color){ 0, 0, 0, 70 });
+            DrawCircleV(Vector2Add(joy_c, Vector2Scale(joy_v, 70 * S)), 30 * S, (Color){ 255, 255, 255, 120 });
+        } else if (!(tilt_walk && tilt_available())) {
+            DrawCircleV((Vector2){ 130 * S, H - 140 * S }, 70 * S, (Color){ 0, 0, 0, 40 });
+            text("MOVE", 130 * S, H - 146 * S, 13 * S, (Color){ 255, 255, 255, 90 }, 1);
+        }
     }
 }
 
-static void speedo(int w, int h, float S)
+// ---------------------------------------------------------------- screens
+
+static Rectangle frame_rect(void) { return rect(W * 0.05f, H * 0.07f, W * 0.9f, H * 0.86f); }
+
+static bool close_button(Rectangle f)
 {
-    Ped *pl = &peds[PLAYER];
-    if (pl->car < 0 || !cars[pl->car].used) return;
-    Car *c = &cars[pl->car];
-    float M = fmaxf(18, 30 * S), x = w - M, y = h - M;
-    int kmh = (int)(fabsf(car_speed(c)) * 3.6f + 0.5f);
-    char b[16];
-    snprintf(b, sizeof b, "%d", kmh);
-    float size = 64 * S;
-    text("KM/H", x, y - 22 * S, 14 * S, DIM, 2);
-    text(b, x - text_w("KM/H", 14 * S) - 14 * S, y - size - 2 * S, size, INK, 2);
-    float hk = Clamp(c->health / 1000, 0, 1);
-    Color col = hk < 0.35f ? (fmodf(game_s * 4, 1) < 0.5f ? DANGER : alpha(DANGER, 0.5f)) : ACCENT;
-    bar((Rectangle){ x - 150 * S, y - 12 * S, 150 * S, 6 * S }, hk, col);
-    if (c->health < 150) text("ENGINE FIRE", x, y - size - 28 * S, 13 * S, fmodf(game_s * 4, 1) < 0.5f ? DANGER : DIM, 2);
+    Rectangle r = rect(f.x + f.width - 54 * S, f.y + 10 * S, 44 * S, 38 * S);
+    return button(r, "X", true) || IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACK);
 }
 
-// ---- full-screen states
-
-static float mode_t;
-
-static void end_card(int w, int h, float S)
+static void tabs(Rectangle f)
 {
-    float age = game_s - mode_t;
-    float a = Clamp(age / 1.2f, 0, 1);
-    DrawRectangle(0, 0, w, h, (Color){ 4, 5, 8, (unsigned char)(170 * a) });
-    bool dead = mode == MODE_DEAD;
-    const char *title = dead ? "FLATLINED" : "ARRESTED";
-    float k = Clamp((age - 0.35f) / 0.5f, 0, 1);
-    float size = 120 * S;
-    float ty = h * 0.42f - size / 2;
-    text(title, w / 2.0f, ty + (1 - k) * 14 * S, size, alpha(INK, k), 1);
-    float lw = text_w(title, size);
-    DrawRectangle((int)(w / 2 - lw / 2), (int)(ty + size + 18 * S), (int)(lw * k), (int)(4 * S), alpha(ACCENT, k));
-    char fee[32];
-    snprintf(fee, sizeof fee, "-$%d", dead ? 500 : 250);
-    float k2 = Clamp((age - 0.9f) / 0.5f, 0, 1);
-    text(fee, w / 2.0f, ty + size + 44 * S, 38 * S, alpha(ACCENT, k2), 1);
-    text(dead ? "Patched up at Mercy General" : "Released from the Civic Center", w / 2.0f, ty + size + 96 * S, 17 * S, alpha(DIM, k2), 1);
+    static const char *names[4] = { "PACK", "CRAFT", "CAR", "TRIP" };
+    static const int scr[4] = { UI_PACK, UI_CRAFT, UI_CAR, UI_MAP };
+    float x = f.x + 16 * S;
+    for (int i = 0; i < 4; i++) {
+        Rectangle r = rect(x, f.y + 10 * S, 120 * S, 38 * S);
+        bool on = ui_screen == scr[i];
+        if (on) { DrawRectangleRounded(r, 0.25f, 6, ACCENT); text(names[i], r.x + r.width / 2, r.y + 11 * S, 16 * S, (Color){ 20, 20, 20, 255 }, 1); }
+        else if (button(r, names[i], true)) {
+            ui_screen = scr[i];
+            if (scr[i] == UI_CAR && (car_view < 0 || !cars[car_view].used)) car_view = sv.home_car;
+            sel_slot = sel_cargo = -1;
+        }
+        x += 130 * S;
+    }
 }
 
-static void pause_screen(int w, int h, float S)
+static void details(Rectangle r, int item, int count)
 {
-    DrawRectangle(0, 0, w, h, (Color){ 4, 5, 8, 190 });
-    float cx = w / 2.0f, y = h * 0.14f;
-    text("PAUSED", cx, y, 64 * S, INK, 1);
-    DrawRectangle((int)(cx - 40 * S), (int)(y + 82 * S), (int)(80 * S), (int)(4 * S), ACCENT);
-    static const char *rows[][2] = {
-        { "W A S D", "Move" }, { "Mouse", "Look" }, { "Left mouse", "Fire / punch" }, { "Right mouse", "Aim" },
-        { "Shift", "Sprint" }, { "Space", "Jump / handbrake" }, { "C or Ctrl", "Crouch" }, { "F or Enter", "Get in / out of a car" },
-        { "R", "Reload" }, { "E and Q / wheel", "Switch weapon" }, { "H", "Horn" }, { "V", "Camera distance" },
-        { "F11", "Fullscreen" }, { "M (hold)", "Map" }, { "Esc or P", "Resume" },
+    if (item < 0) { text("Tap an item", r.x + r.width / 2, r.y + r.height * 0.4f, 15 * S, DIM, 1); return; }
+    Item *it = &items[item];
+    icon(it->icon, (Vector2){ r.x + 50 * S, r.y + 50 * S }, 64 * S, hexc(it->color));
+    text(it->name, r.x + 96 * S, r.y + 24 * S, 18 * S, INK, 0);
+    char b[96];
+    snprintf(b, sizeof b, "%s  %.2f KG  x%d", item_kind_name(it->kind), it->weight, count);
+    text(b, r.x + 96 * S, r.y + 52 * S, 12 * S, DIM, 0);
+    float y = r.y + 100 * S;
+    y += wrap(it->desc, r.x + 16 * S, y, r.width - 32 * S, 14 * S, INK);
+    char e[96] = { 0 };
+    switch (it->effect) {
+    case E_EAT: snprintf(e, sizeof e, "FOOD +%.0f%s", it->value, it->value2 ? (it->value2 > 0 ? "  WATER +" : "  WATER ") : ""); if (it->value2) snprintf(e + strlen(e), 20, "%.0f", it->value2); break;
+    case E_DRINK: snprintf(e, sizeof e, "WATER +%.0f", it->value); break;
+    case E_HEAL: snprintf(e, sizeof e, "HEALTH +%.0f", it->value); break;
+    case E_BANDAGE: snprintf(e, sizeof e, "STOPS BLEEDING, HEALTH +%.0f", it->value); break;
+    case E_REST: snprintf(e, sizeof e, "REST +%.0f", it->value); break;
+    case E_WARM: snprintf(e, sizeof e, "WARMTH +%.0f", it->value); break;
+    case E_FUEL: snprintf(e, sizeof e, "FUEL +%.0f L", it->value); break;
+    case E_ENGINE: snprintf(e, sizeof e, "ENGINE +%.0f", it->value); break;
+    case E_TIRE: snprintf(e, sizeof e, "TYRE +%.0f", it->value); break;
+    case E_BATTERY: snprintf(e, sizeof e, "NEW BATTERY"); break;
+    case E_RADIATOR: snprintf(e, sizeof e, "COOLANT +%.0f", it->value); break;
+    case E_CURE: snprintf(e, sizeof e, "SICKNESS -%.0f", it->value); break;
+    default: break;
+    }
+    if (e[0]) { text(e, r.x + 16 * S, y + 4 * S, 13 * S, GOOD, 0); y += 22 * S; }
+    if (it->sick > 0) { snprintf(b, sizeof b, "MIGHT MAKE YOU SICK (%.0f%%)", it->sick * 100); text(b, r.x + 16 * S, y + 4 * S, 12 * S, DANGER, 0); }
+}
+
+static void pack_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    tabs(f);
+    if (close_button(f)) { ui_screen = UI_NONE; return; }
+    char b[64];
+    float wt = pack_weight(), cap = pack_capacity();
+    snprintf(b, sizeof b, "%.1f / %.0f KG", wt, cap);
+    text(b, f.x + f.width - 70 * S, f.y + 22 * S, 14 * S, wt > cap ? DANGER : DIM, 2);
+    float gx = f.x + 20 * S, gy = f.y + 66 * S, t = fminf((f.width * 0.56f) / 6, (f.height - 90 * S) / 4) - 8 * S;
+    for (int i = 0; i < PACK_SLOTS; i++) {
+        Rectangle r = rect(gx + (i % 6) * (t + 8 * S), gy + (i / 6) * (t + 8 * S), t, t);
+        item_tile(r, pack[i], sel_slot == i, false);
+        if (clicked(r)) sel_slot = pack[i].n > 0 ? i : -1;
+    }
+    Rectangle d = rect(gx + 6 * (t + 8 * S) + 8 * S, gy, f.x + f.width - (gx + 6 * (t + 8 * S) + 28 * S), f.height - 90 * S);
+    panel(d, PANEL2);
+    if (sel_slot >= 0 && pack[sel_slot].n <= 0) sel_slot = -1;
+    int it = sel_slot >= 0 ? pack[sel_slot].item : -1;
+    details(d, it, sel_slot >= 0 ? pack[sel_slot].n : 0);
+    if (it >= 0) {
+        float bw = (d.width - 40 * S) / 3, by = d.y + d.height - 56 * S;
+        bool usable = items[it].effect != E_NONE && items[it].effect != E_WEAPON;
+        if (!strcmp(items[it].id, "wood") || !strcmp(items[it].id, "rod")) usable = true;
+        if (button(rect(d.x + 10 * S, by, bw, 44 * S), items[it].effect == E_LIGHT && items[it].value <= 1 ? (sv.torch_on ? "LIGHT OFF" : "LIGHT ON") : "USE", usable))
+            item_use(it);
+        if (button(rect(d.x + 20 * S + bw, by, bw, 44 * S), "DROP", true)) pack_drop(sel_slot);
+        bool near_car = sv.home_car >= 0 && cars[sv.home_car].used && Vector2Distance((Vector2){ cars[sv.home_car].pos.x, cars[sv.home_car].pos.z }, (Vector2){ peds[PLAYER].pos.x, peds[PLAYER].pos.z }) < 8;
+        if (button(rect(d.x + 30 * S + 2 * bw, by, bw, 44 * S), "TO TRUNK", near_car)) cargo_move(true, sel_slot);
+    }
+}
+
+static void craft_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    tabs(f);
+    if (close_button(f)) { ui_screen = UI_NONE; return; }
+    float y0 = f.y + 66 * S, rh = 64 * S;
+    float *sy = &scroll_y[UI_CRAFT];
+    Rectangle list = rect(f.x + 16 * S, y0, f.width - 32 * S, f.height - 82 * S);
+    if (hover(list)) *sy -= GetMouseWheelMove() * 60 * S;
+    if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hover(list)) *sy -= GetMouseDelta().y;
+    float maxs = fmaxf(0, nrecipes * (rh + 6 * S) - list.height);
+    *sy = Clamp(*sy, 0, maxs);
+    BeginScissorMode((int)list.x, (int)list.y, (int)list.width, (int)list.height);
+    for (int r = 0; r < nrecipes; r++) {
+        Recipe *rc = &recipes[r];
+        float y = y0 + r * (rh + 6 * S) - *sy;
+        if (y > list.y + list.height || y + rh < list.y) continue;
+        Rectangle row = rect(list.x, y, list.width, rh);
+        bool can = recipe_can(r);
+        DrawRectangleRounded(row, 0.12f, 4, (Color){ 255, 255, 255, (unsigned char)(can ? 22 : 10) });
+        icon(items[rc->out].icon, (Vector2){ row.x + 32 * S, y + rh / 2 }, 40 * S, hexc(items[rc->out].color));
+        char b[64];
+        snprintf(b, sizeof b, "%s%s", items[rc->out].name, rc->out_n > 1 ? "" : "");
+        if (rc->out_n > 1) snprintf(b, sizeof b, "%s X%d", items[rc->out].name, rc->out_n);
+        text(b, row.x + 64 * S, y + 12 * S, 15 * S, can ? INK : DIM, 0);
+        float x = row.x + 64 * S;
+        for (int i = 0; i < rc->nin; i++) {
+            int have = pack_count(rc->in[i]);
+            snprintf(b, sizeof b, "%d %s", rc->in_n[i], items[rc->in[i]].name);
+            text(b, x, y + 38 * S, 11 * S, have >= rc->in_n[i] ? GOOD : DANGER, 0);
+            x += text_w(b, 11 * S) + 16 * S;
+        }
+        if (rc->tool >= 0) { snprintf(b, sizeof b, "TOOL %s", items[rc->tool].name); text(b, x, y + 38 * S, 11 * S, pack_count(rc->tool) > 0 ? GOOD : DANGER, 0); x += text_w(b, 11 * S) + 16 * S; }
+        if (rc->fire) text("AT A FIRE", x, y + 38 * S, 11 * S, sv.camp_fire > 0 ? GOOD : WARN, 0);
+        if (button(rect(row.x + row.width - 130 * S, y + 12 * S, 118 * S, rh - 24 * S), "MAKE", can)) recipe_make(r);
+    }
+    EndScissorMode();
+    if (nrecipes == 0) text("Nothing to make", W / 2, H / 2, 16 * S, DIM, 1);
+}
+
+static void cond_bar(float x, float y, float w, const char *label, float v, const char *val)
+{
+    text(label, x, y, 12 * S, DIM, 0);
+    bar(rect(x + 110 * S, y, w - 170 * S, 12 * S), v, v < 0.2f ? DANGER : v < 0.5f ? WARN : GOOD);
+    text(val, x + w, y, 12 * S, INK, 2);
+}
+
+static void car_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    tabs(f);
+    if (close_button(f)) { ui_screen = UI_NONE; return; }
+    int ci = car_view;
+    if (ci < 0 || !cars[ci].used) {
+        text("No car. Find one on the road, fix it up and claim it.", W / 2, H / 2, 16 * S, DIM, 1);
+        return;
+    }
+    Car *c = &cars[ci];
+    bool home = ci == sv.home_car;
+    float x = f.x + 24 * S, y = f.y + 70 * S, w = f.width * 0.38f;
+    char b[64];
+    snprintf(b, sizeof b, "%s%s", car_name(c->model), home ? "  (YOURS)" : "");
+    text(b, x, y, 20 * S, home ? SAND : INK, 0);
+    y += 40 * S;
+    snprintf(b, sizeof b, "%.0f / %.0f L", c->fuel, c->fuel_max); cond_bar(x, y, w, "FUEL", c->fuel / c->fuel_max, b); y += 26 * S;
+    snprintf(b, sizeof b, "%.0f%%", c->engine); cond_bar(x, y, w, "ENGINE", c->engine / 100, b); y += 26 * S;
+    snprintf(b, sizeof b, "%.0f%%", c->radiator); cond_bar(x, y, w, "COOLANT", c->radiator / 100, b); y += 26 * S;
+    snprintf(b, sizeof b, "%.0f%%", c->battery); cond_bar(x, y, w, "BATTERY", c->battery / 100, b); y += 26 * S;
+    static const char *tn[4] = { "TYRE FL", "TYRE FR", "TYRE RL", "TYRE RR" };
+    for (int t = 0; t < 4; t++) { snprintf(b, sizeof b, c->tire[t] <= 0 ? "FLAT" : "%.0f%%", c->tire[t]); cond_bar(x, y, w, tn[t], c->tire[t] / 100, b); y += 26 * S; }
+    snprintf(b, sizeof b, "%.0f", c->health); cond_bar(x, y, w, "BODY", c->health / 1000, b); y += 26 * S;
+    text(c->armor ? "ARMOURED" : "NO ARMOUR", x, y, 12 * S, c->armor ? GOOD : DIM, 0); y += 30 * S;
+    if (c->ai == AI_WRECK) text("BURNT OUT: SCRAP ONLY", x, y, 14 * S, DANGER, 0);
+    float bw = w * 0.48f;
+    float by = f.y + f.height - 112 * S;
+    if (!home) {
+        if (button(rect(x, by, bw, 44 * S), "SIPHON FUEL", c->fuel > 0.5f)) car_siphon(ci);
+        if (button(rect(x + bw + 10 * S, by, bw, 44 * S), "STRIP PARTS", true)) car_strip(ci);
+        if (button(rect(x, by + 52 * S, bw * 2 + 10 * S, 44 * S), "MAKE THIS MY CAR", c->ai != AI_WRECK)) car_claim(ci);
+    } else {
+        text("Use parts from the pack to repair it.", x, by + 8 * S, 13 * S, DIM, 0);
+        text("Tap trunk items to take them, pack items to store them.", x, by + 30 * S, 13 * S, DIM, 0);
+    }
+    if (!home) return;
+    // trunk and pack side by side
+    float gx = f.x + f.width * 0.46f, gy = f.y + 70 * S, t = fminf((f.width * 0.5f) / 8 - 6 * S, 56 * S);
+    text("TRUNK", gx, gy - 4 * S, 13 * S, SAND, 0);
+    gy += 16 * S;
+    for (int i = 0; i < CARGO_SLOTS; i++) {
+        Rectangle r = rect(gx + (i % 8) * (t + 6 * S), gy + (i / 8) * (t + 6 * S), t, t);
+        item_tile(r, cargo[i], false, false);
+        if (clicked(r) && cargo[i].n > 0) cargo_move(false, i);
+    }
+    float py = gy + 5 * (t + 6 * S) + 22 * S;
+    text("PACK", gx, py - 18 * S, 13 * S, SAND, 0);
+    for (int i = 0; i < PACK_SLOTS; i++) {
+        Rectangle r = rect(gx + (i % 8) * (t + 6 * S), py + (i / 8) * (t + 6 * S), t, t);
+        item_tile(r, pack[i], false, false);
+        if (clicked(r) && pack[i].n > 0) cargo_move(true, i);
+    }
+}
+
+static void trade_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    if (close_button(f)) { ui_screen = UI_NONE; return; }
+    text("TRADER", f.x + 24 * S, f.y + 20 * S, 20 * S, SAND, 0);
+    char b[64];
+    snprintf(b, sizeof b, "YOUR DOLLARS: %d", pack_count(item_find("cash")));
+    text(b, f.x + f.width - 70 * S, f.y + 22 * S, 15 * S, GOOD, 2);
+    float t = fminf(f.width * 0.42f / 4 - 8 * S, 86 * S);
+    float gx = f.x + 24 * S, gy = f.y + 80 * S;
+    text("BUY (TAP)", gx, gy - 22 * S, 13 * S, DIM, 0);
+    for (int i = 0; i < 12; i++) {
+        Rectangle r = rect(gx + (i % 4) * (t + 8 * S), gy + (i / 4) * (t + 26 * S), t, t);
+        item_tile(r, trade_stock[i], false, false);
+        if (trade_stock[i].n > 0) {
+            snprintf(b, sizeof b, "$%d", item_price(trade_stock[i].item, false));
+            text(b, r.x + t / 2, r.y + t + 4 * S, 11 * S, WARN, 1);
+            if (hover(r)) text(items[trade_stock[i].item].name, f.x + f.width / 2, f.y + f.height - 40 * S, 15 * S, INK, 1);
+        }
+        if (clicked(r)) trade_buy(i);
+    }
+    float sx = f.x + f.width * 0.52f;
+    text("SELL (TAP)", sx, gy - 22 * S, 13 * S, DIM, 0);
+    float ts = fminf(f.width * 0.44f / 6 - 8 * S, 70 * S);
+    for (int i = 0; i < PACK_SLOTS; i++) {
+        Rectangle r = rect(sx + (i % 6) * (ts + 8 * S), gy + (i / 6) * (ts + 24 * S), ts, ts);
+        item_tile(r, pack[i], false, false);
+        if (pack[i].n > 0 && strcmp(items[pack[i].item].id, "cash")) {
+            snprintf(b, sizeof b, "$%d", item_price(pack[i].item, true));
+            text(b, r.x + ts / 2, r.y + ts + 4 * S, 11 * S, GOOD, 1);
+            if (hover(r)) text(items[pack[i].item].name, f.x + f.width / 2, f.y + f.height - 40 * S, 15 * S, INK, 1);
+        }
+        if (clicked(r)) trade_sell(i);
+    }
+}
+
+static void loot_screen(void)
+{
+    float w = fminf(W * 0.7f, 760 * S), h = 300 * S;
+    Rectangle f = rect(W / 2 - w / 2, H / 2 - h / 2, w, h);
+    panel(f, PANEL);
+    if (close_button(f)) { ui_screen = UI_NONE; loot_ci = -1; return; }
+    text("FOUND", f.x + 24 * S, f.y + 20 * S, 20 * S, SAND, 0);
+    float t = (w - 48 * S) / 8 - 8 * S;
+    bool any = false;
+    for (int i = 0; i < 8; i++) {
+        Rectangle r = rect(f.x + 24 * S + i * (t + 8 * S), f.y + 70 * S, t, t);
+        item_tile(r, loot_slots[i], false, false);
+        if (loot_slots[i].n > 0) {
+            any = true;
+            if (hover(r)) text(items[loot_slots[i].item].name, f.x + w / 2, f.y + 80 * S + t, 15 * S, INK, 1);
+        }
+        if (clicked(r)) loot_take(i);
+    }
+    if (!any) text("Nothing useful left", f.x + w / 2, f.y + 90 * S + t, 15 * S, DIM, 1);
+    if (button(rect(f.x + w / 2 - 110 * S, f.y + h - 64 * S, 220 * S, 48 * S), "TAKE ALL", any)) { loot_take_all(); bool left = false; for (int i = 0; i < 8; i++) if (loot_slots[i].n > 0) left = true; if (!left) { ui_screen = UI_NONE; loot_ci = -1; } }
+}
+
+typedef struct { char name[32]; float km; } LogEntry;
+static LogEntry tlog[64];
+static int ntlog;
+
+static void map_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    tabs(f);
+    if (close_button(f)) { ui_screen = UI_NONE; return; }
+    // the road around us, from the road function itself
+    Rectangle m = rect(f.x + 16 * S, f.y + 64 * S, f.width * 0.6f, f.height - 80 * S);
+    DrawRectangleRounded(m, 0.04f, 4, (Color){ 30, 28, 24, 255 });
+    Vector3 pp = peds[PLAYER].car >= 0 ? cars[peds[PLAYER].car].pos : peds[PLAYER].pos;
+    float s0 = road_s(pp);
+    float span = 5000;
+    Vector3 c = road_at(s0, NULL);
+    float sc = fminf(m.width, m.height) / span * 0.9f;
+    Vector2 mc = { m.x + m.width / 2, m.y + m.height / 2 };
+    Vector2 prev = { 0 };
+    for (float s = fmaxf(0, s0 - span * 0.6f); s < s0 + span * 0.6f; s += 40) {
+        Vector3 q = road_at(s, NULL);
+        Vector2 sp = { mc.x + (q.x - c.x) * sc * -1, mc.y - (q.z - c.z) * sc };
+        if (s > fmaxf(0, s0 - span * 0.6f)) DrawLineEx(prev, sp, 3 * S, s < s0 ? (Color){ 150, 140, 120, 255 } : (Color){ 220, 210, 190, 255 });
+        prev = sp;
+    }
+    for (int i = 0; i < MAX_STOPS; i++) {
+        if (!stops[i].used) continue;
+        Vector2 sp = { mc.x + (stops[i].p.x - c.x) * sc * -1, mc.y - (stops[i].p.z - c.z) * sc };
+        if (!CheckCollisionPointRec(sp, m)) continue;
+        DrawCircleV(sp, 6 * S, stops[i].hostile && stops[i].visited ? DANGER : stops[i].visited ? GOOD : WARN);
+        text(stops[i].name, sp.x + 10 * S, sp.y - 6 * S, 10 * S, INK, 0);
+    }
+    if (sv.home_car >= 0 && cars[sv.home_car].used) {
+        Vector3 q = cars[sv.home_car].pos;
+        Vector2 sp = { mc.x + (q.x - c.x) * sc * -1, mc.y - (q.z - c.z) * sc };
+        DrawRectangle((int)(sp.x - 5 * S), (int)(sp.y - 4 * S), (int)(10 * S), (int)(8 * S), SAND);
+    }
+    DrawCircleV(mc, 7 * S, ACCENT);
+    DrawRing(mc, 9 * S, 11 * S, 0, 360, 24, WHITE);
+    // the log
+    float x = m.x + m.width + 20 * S, y = m.y;
+    char b[80];
+    snprintf(b, sizeof b, "KM DRIVEN  %.1f", sv.km); text(b, x, y, 16 * S, SAND, 0); y += 28 * S;
+    snprintf(b, sizeof b, "DAYS  %.1f", sv.days); text(b, x, y, 13 * S, INK, 0); y += 22 * S;
+    snprintf(b, sizeof b, "STOPS VISITED  %d", sv.stops_seen); text(b, x, y, 13 * S, INK, 0); y += 22 * S;
+    snprintf(b, sizeof b, "RAIDERS DOWN  %d", sv.kills); text(b, x, y, 13 * S, INK, 0); y += 22 * S;
+    snprintf(b, sizeof b, "THINGS MADE  %d", sv.crafted); text(b, x, y, 13 * S, INK, 0); y += 22 * S;
+    snprintf(b, sizeof b, "DANGER  %.0f%%", threat * 100); text(b, x, y, 13 * S, threat > 0.6f ? DANGER : WARN, 0); y += 34 * S;
+    text("ALONG THE WAY", x, y, 13 * S, DIM, 0); y += 22 * S;
+    for (int i = ntlog - 1; i >= 0 && y < f.y + f.height - 20 * S; i--) {
+        snprintf(b, sizeof b, "%5.1f  %s", tlog[i].km, tlog[i].name);
+        text(b, x, y, 11 * S, INK, 0);
+        y += 18 * S;
+    }
+}
+
+void hud_log_stop(const char *name, float km)
+{
+    if (ntlog > 0 && !strcmp(tlog[ntlog - 1].name, name)) return;
+    if (ntlog == 64) { memmove(tlog, tlog + 1, 63 * sizeof tlog[0]); ntlog = 63; }
+    snprintf(tlog[ntlog].name, sizeof tlog[0].name, "%s", name);
+    tlog[ntlog].km = km;
+    ntlog++;
+}
+
+static bool toggle_row(float x, float y, float w, const char *label, bool v)
+{
+    text(label, x, y + 10 * S, 15 * S, INK, 0);
+    return button(rect(x + w - 130 * S, y, 130 * S, 40 * S), v ? "ON" : "OFF", true);
+}
+
+extern void render_set_quality(int q);
+extern float audio_volume;
+
+static void settings_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    if (close_button(f)) { ui_screen = mode == MODE_TITLE ? UI_TITLE : UI_PAUSE; settings_save(); return; }
+    text("SETTINGS", f.x + 24 * S, f.y + 20 * S, 22 * S, SAND, 0);
+    float x = f.x + 40 * S, y = f.y + 80 * S, w = f.width * 0.42f;
+    static const char *qn[3] = { "LOW", "MEDIUM", "HIGH" };
+    text("GRAPHICS", x, y + 10 * S, 15 * S, INK, 0);
+    if (button(rect(x + w - 130 * S, y, 130 * S, 40 * S), qn[quality], true)) render_set_quality((quality + 1) % 3);
+    y += 54 * S;
+    if (toggle_row(x, y, w, "STEER BY TILTING", tilt_steer)) tilt_steer = !tilt_steer;
+    y += 54 * S;
+    if (toggle_row(x, y, w, "TILT FORWARD TO GO", tilt_walk)) tilt_walk = !tilt_walk;
+    y += 54 * S;
+    if (toggle_row(x, y, w, "INVERT TILT", tilt_invert)) tilt_invert = !tilt_invert;
+    y += 54 * S;
+    char b[32];
+    snprintf(b, sizeof b, "%.1fX", tilt_sens);
+    text("TILT SENSITIVITY", x, y + 10 * S, 15 * S, INK, 0);
+    if (button(rect(x + w - 270 * S, y, 60 * S, 40 * S), "-", true)) tilt_sens = fmaxf(0.4f, tilt_sens - 0.1f);
+    text(b, x + w - 170 * S, y + 11 * S, 15 * S, INK, 1);
+    if (button(rect(x + w - 130 * S, y, 60 * S, 40 * S), "+", true)) tilt_sens = fminf(2.5f, tilt_sens + 0.1f);
+    y += 54 * S;
+    if (button(rect(x, y, w, 44 * S), tilt_available() ? "CALIBRATE TILT (HOLD THE PHONE HOW YOU LIKE IT)" : "NO TILT SENSOR ON THIS DEVICE", tilt_available())) { tilt_calibrate(); hud_msg("Tilt calibrated", 2); }
+    float x2 = f.x + f.width * 0.55f, y2 = f.y + 80 * S;
+    snprintf(b, sizeof b, "%.0f%%", audio_volume * 100);
+    text("VOLUME", x2, y2 + 10 * S, 15 * S, INK, 0);
+    if (button(rect(x2 + w - 270 * S, y2, 60 * S, 40 * S), "-", true)) audio_volume = fmaxf(0, audio_volume - 0.1f);
+    text(b, x2 + w - 170 * S, y2 + 11 * S, 15 * S, INK, 1);
+    if (button(rect(x2 + w - 130 * S, y2, 60 * S, 40 * S), "+", true)) audio_volume = fminf(1.5f, audio_volume + 0.1f);
+    y2 += 54 * S;
+    if (toggle_row(x2, y2, w, "TOUCH CONTROLS", touch_ui)) touch_ui = !touch_ui;
+    y2 += 54 * S;
+    snprintf(b, sizeof b, "LONG ROAD %s", GAME_VERSION);
+    text(b, x2, y2 + 20 * S, 12 * S, DIM, 0);
+}
+
+static void mods_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    if (close_button(f)) { ui_screen = mode == MODE_TITLE ? UI_TITLE : UI_PAUSE; return; }
+    text("MODS", f.x + 24 * S, f.y + 20 * S, 22 * S, SAND, 0);
+    char b[300];
+    snprintf(b, sizeof b, "FOLDER: %s", mods_dir());
+    text(b, f.x + 24 * S, f.y + 58 * S, 11 * S, DIM, 0);
+    text("Changes apply when you start a new trip or continue one.", f.x + 24 * S, f.y + 78 * S, 12 * S, DIM, 0);
+    float y = f.y + 110 * S;
+    for (int i = 0; i < mods_count() && y < f.y + f.height - 120 * S; i++) {
+        text(mod_name(i), f.x + 40 * S, y + 12 * S, 15 * S, INK, 0);
+        if (button(rect(f.x + f.width - 200 * S, y, 150 * S, 40 * S), mod_enabled(i) ? "ON" : "OFF", true)) mod_toggle(i);
+        y += 50 * S;
+    }
+    if (mods_count() == 0) text("No mods found. Put .txt mod files in the folder above.", W / 2, y + 20 * S, 14 * S, DIM, 1);
+#ifdef PLATFORM_WEB
+    if (button(rect(f.x + 40 * S, f.y + f.height - 70 * S, 300 * S, 48 * S), "IMPORT A MOD FILE", true)) {
+        extern void web_pick_mod(void);
+        web_pick_mod();
+    }
+#endif
+    if (data_errors[0]) wrap(data_errors, f.x + f.width * 0.45f, f.y + f.height - 100 * S, f.width * 0.5f, 10 * S, WARN);
+}
+
+static void help_screen(void)
+{
+    Rectangle f = frame_rect();
+    panel(f, PANEL);
+    if (close_button(f)) { ui_screen = mode == MODE_TITLE ? UI_TITLE : UI_PAUSE; return; }
+    text("HOW TO SURVIVE THE LONG ROAD", f.x + 24 * S, f.y + 20 * S, 20 * S, SAND, 0);
+    const char *lines[] = {
+        "Drive as far as you can. Every stop has something: fuel, food, parts, people.",
+        "Keep food, water, rest and warmth up. Empty bars hurt. Cold nights are dangerous.",
+        "Fuel runs out. Hand-pump station tanks, siphon wrecks, carry jerry cans in the trunk.",
+        "Cars wear out. Patch tyres, top up coolant, swap batteries, rebuild engines.",
+        "Search shelves, fridges, lockers, trunks and bodies. Trade with traders for what you need.",
+        "Build a fire with two firewood and a lighter. Cook meat, boil dirty water, sleep warm.",
+        "Raiders hold some stops and hunt the highway. Watch the mirror. Wolves come out at night.",
+        "",
+        "PHONE: tilt like a wheel to steer, tilt forward to drive or walk. Drag the right side to look.",
+        "KEYBOARD: WASD move, mouse look, E use, F car, TAB pack, Q/E weapon, R reload,",
+        "SPACE jump or handbrake, L lights, H horn, V camera, M trip map, ESC pause.",
+        "GAMEPAD: sticks move and look, triggers drive, Y car, X reload, A jump.",
     };
-    int n = (int)(sizeof rows / sizeof rows[0]);
-    int per = (n + 1) / 2;
-    float keyw = 0;
-    for (int i = 0; i < n; i++) keyw = fmaxf(keyw, text_w(rows[i][0], 17 * S));
-    keyw += 24 * S;
-    float colw = fmaxf(400 * S, keyw + 310 * S), top = y + 130 * S, rowh = 38 * S;
-    for (int i = 0; i < n; i++) {
-        int col = i / per, row = i % per;
-        float x0 = cx - colw + col * colw + 10 * S;
-        text(rows[i][0], x0, top + row * rowh, 17 * S, ACCENT, 0);
-        text(rows[i][1], x0 + keyw, top + row * rowh, 17 * S, INK, 0);
-    }
-    text("Gamepad: sticks move and look, triggers aim and fire, A jump, Y get in, X reload, back for the map", cx, top + per * rowh + 40 * S, 13 * S, DIM, 1);
+    float y = f.y + 70 * S;
+    for (int i = 0; i < (int)(sizeof lines / sizeof *lines); i++) { text(lines[i], f.x + 30 * S, y, 13 * S, i >= 8 ? DIM : INK, 0); y += 26 * S; }
 }
 
-static void full_map(int w, int h, float S)
+static void pause_screen(void)
 {
-    if (!map_ok) return;
-    Ped *pl = &peds[PLAYER];
-    DrawRectangle(0, 0, w, h, (Color){ 4, 5, 8, 215 });
-    float side = h * 0.88f;
-    Vector3 f = { 0, 0, 1 };
-    View v = { { w / 2.0f, h / 2.0f }, side / MAP_M, { 0, 0, 0 }, f, { -f.z, 0, f.x } };
-    Rectangle r = { w / 2.0f - side / 2, h / 2.0f - side / 2, side, side };
-    map_rect(&v, r);
-    DrawRectangleLinesEx(r, 2 * S, alpha(INK, 0.5f));
-    for (int i = 0; i < nshops; i++) {
-        Vector2 p = to_screen(&v, shops[i].door);
-        bool cool = game_s - shops[i].robbed_at < 300;
-        text("$", p.x, p.y - 6 * S, 12 * S, cool ? alpha(DIM, 0.7f) : ACCENT, 1);
+    DrawRectangle(0, 0, W, H, (Color){ 0, 0, 0, 120 });
+    float w = 340 * S, x = W / 2 - w / 2, y = H * 0.22f;
+    text("PAUSED", W / 2, y - 60 * S, 34 * S, SAND, 1);
+    if (button(rect(x, y, w, 52 * S), "RESUME", true) || IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_BACK)) ui_screen = UI_NONE;
+    if (button(rect(x, y + 64 * S, w, 52 * S), "PACK", true)) ui_screen = UI_PACK;
+    if (button(rect(x, y + 128 * S, w, 52 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
+    if (button(rect(x, y + 192 * S, w, 52 * S), "MODS", true)) ui_screen = UI_MODS;
+    if (button(rect(x, y + 256 * S, w, 52 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
+    if (button(rect(x, y + 320 * S, w, 52 * S), "SAVE AND QUIT", true)) { game_save(); mode = MODE_TITLE; ui_screen = UI_TITLE; }
+}
+
+extern bool want_new_game, want_continue, want_quit;
+
+static void title_screen(void)
+{
+    DrawRectangleGradientV(0, 0, W, H, (Color){ 0, 0, 0, 40 }, (Color){ 0, 0, 0, 170 });
+    float y = H * 0.16f;
+    text("LONG ROAD", W * 0.08f, y, 64 * S, SAND, 0);
+    text("A HIGHWAY SURVIVAL GAME", W * 0.08f + 4 * S, y + 80 * S, 16 * S, INK, 0);
+    float w = 340 * S, x = W * 0.08f, by = H * 0.42f;
+    bool save = game_has_save();
+    if (button(rect(x, by, w, 54 * S), "CONTINUE THE TRIP", save)) want_continue = true;
+    if (button(rect(x, by + 64 * S, w, 54 * S), "NEW TRIP", true)) want_new_game = true;
+    if (button(rect(x, by + 128 * S, w, 54 * S), "SETTINGS", true)) ui_screen = UI_SETTINGS;
+    if (button(rect(x, by + 192 * S, w, 54 * S), "MODS", true)) ui_screen = UI_MODS;
+    if (button(rect(x, by + 256 * S, w, 54 * S), "HOW TO PLAY", true)) ui_screen = UI_HELP;
+#if defined(PLATFORM_DESKTOP)
+    if (button(rect(x, by + 320 * S, w, 54 * S), "QUIT", true)) want_quit = true;
+#endif
+    char b[64];
+    snprintf(b, sizeof b, "%s  %d MODS ON", GAME_VERSION, ({ int n = 0; for (int i = 0; i < mods_count(); i++) n += mod_enabled(i); n; }));
+    text(b, W - 20 * S, H - 30 * S, 11 * S, DIM, 2);
+}
+
+static void dead_screen(void)
+{
+    DrawRectangle(0, 0, W, H, (Color){ 30, 0, 0, 150 });
+    text("THE ROAD ENDS HERE", W / 2, H * 0.2f, 40 * S, (Color){ 240, 90, 70, 255 }, 1);
+    char b[96];
+    float y = H * 0.36f;
+    snprintf(b, sizeof b, "YOU MADE IT %.1f KM IN %.1f DAYS", sv.km, sv.days); text(b, W / 2, y, 20 * S, INK, 1); y += 40 * S;
+    snprintf(b, sizeof b, "%d STOPS  %d RAIDERS  %d THINGS MADE", sv.stops_seen, sv.kills, sv.crafted); text(b, W / 2, y, 15 * S, DIM, 1); y += 30 * S;
+    int best = 0;
+    char *t = plat_get("best_km");
+    if (t) { best = atoi(t); free(t); }
+    snprintf(b, sizeof b, "BEST TRIP %.1f KM", fmaxf(best / 10.0f, sv.km)); text(b, W / 2, y, 15 * S, SAND, 1);
+    float w = 320 * S;
+    if (button(rect(W / 2 - w / 2, H * 0.62f, w, 54 * S), "NEW TRIP", true)) want_new_game = true;
+    if (button(rect(W / 2 - w / 2, H * 0.62f + 64 * S, w, 54 * S), "TITLE", true)) { mode = MODE_TITLE; ui_screen = UI_TITLE; }
+}
+
+// ---------------------------------------------------------------- frame
+
+void hud_input(const Input *in)
+{
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { press_at = GetMousePosition(); press_live = true; }
+    press_used = false;
+    if (mode == MODE_TITLE || mode == MODE_DEAD) return;
+    if (in->hit & BTN_PAUSE) {
+        if (ui_screen == UI_NONE) ui_screen = UI_PAUSE;
+        else if (ui_screen != UI_PAUSE) { ui_screen = UI_NONE; loot_ci = -1; }
     }
-    PickView pk[96];
-    int np = pickups_view(pk, 96);
-    for (int i = 0; i < np; i++) {
-        Vector2 p = to_screen(&v, pk[i].pos);
-        if (pk[i].type == PK_CASH) continue;
-        if (pk[i].type == PK_HEALTH) cross(p, 4 * S, 2 * S, INK);
-        else if (pk[i].type == PK_ARMOR) cross(p, 4 * S, 2 * S, STEEL);
-        else diamond(p, 3.6f * S, alpha(INK, 0.85f));
-    }
-    Vector3 places[2] = { police_pos, hospital_pos };
-    for (int i = 0; i < 2; i++) {
-        Vector2 p = to_screen(&v, places[i]);
-        DrawCircleV(p, 10 * S, (Color){ 8, 10, 14, 235 });
-        if (i == 0) shield(p, 5.5f * S, 6.2f * S, COPBLUE, COPBLUE, true);
-        else cross(p, 5.5f * S, 3 * S, INK);
-        text(i == 0 ? "Police" : "Hospital", p.x, p.y + 14 * S, 12 * S, INK, 1);
-    }
-    for (int i = 0; i < MAX_MARKERS; i++) {
-        int kind = marks[i].kind - 1;
-        if (kind >= 0 && kind != MK_STASH) blip(to_screen(&v, marks[i].p), kind, 8 * S, S);
-    }
-    CopView cv[40];
-    int nc = cops_view(cv, 40);
-    for (int i = 0; i < nc; i++) DrawCircleV(to_screen(&v, cv[i].pos), 4 * S, i % 2 ? COPBLUE : DANGER);
-    if (heat_search > 0) {
-        Vector2 sc = to_screen(&v, last_seen);
-        DrawRing(sc, (30 + heat_search * 2.5f) * v.s - 1, (30 + heat_search * 2.5f) * v.s + 1, 0, 360, 48, alpha(ACCENT, 0.8f));
-    }
-    Vector3 pp = pl->car >= 0 && cars[pl->car].used ? cars[pl->car].pos : pl->pos;
-    float yaw = pl->car >= 0 && cars[pl->car].used ? atan2f(car_fwd(&cars[pl->car]).x, car_fwd(&cars[pl->car]).z) : pl->yaw;
-    Vector2 c = to_screen(&v, pp);
-    // the map has +x to the left, so a heading of yaw points at screen angle -yaw from up
-    Vector3 hd = { sinf(yaw), 0, cosf(yaw) };
-    Vector2 tip = Vector2Add(c, Vector2Scale(Vector2Subtract(to_screen(&v, Vector3Add(pp, hd)), c), 1));
-    Vector2 dir = Vector2Normalize(Vector2Subtract(tip, c)), nrm = { -dir.y, dir.x };
-    Vector2 a = Vector2Add(c, Vector2Scale(dir, 11 * S));
-    Vector2 b = Vector2Add(Vector2Subtract(c, Vector2Scale(dir, 7 * S)), Vector2Scale(nrm, 7 * S));
-    Vector2 d = Vector2Subtract(Vector2Subtract(c, Vector2Scale(dir, 7 * S)), Vector2Scale(nrm, 7 * S));
-    DrawTriangle(a, d, b, INK);
-    DrawTriangleLines(a, d, b, (Color){ 0, 0, 0, 220 });
-    text("MAP", r.x, r.y - 30 * S, 20 * S, INK, 0);
-    text(district(pp), r.x + r.width, r.y - 28 * S, 17 * S, DIM, 2);
+    if (in->hit & BTN_BAG) ui_screen = ui_screen == UI_PACK ? UI_NONE : UI_PACK;
+    if (in->hit & BTN_MAP) ui_screen = ui_screen == UI_MAP ? UI_NONE : UI_MAP;
+    if ((in->hit & BTN_USE) && ui_screen == UI_NONE) survive_interact();
+    else if ((in->hit & BTN_USE) && ui_screen == UI_LOOT) loot_take_all();
 }
 
 void hud_draw(int w, int h)
 {
-    float S = h / 1080.0f;
-    if (S < 0.5f) S = 0.5f;
-    mode_t = mode_since;
-    rlDisableBackfaceCulling();
-    rlDisableDepthTest();
-    BeginBlendMode(BLEND_ALPHA);
-
-    if (mode == MODE_PAUSE) {
-        radar(w, h, S);
-        status(w, h, S);
-        pause_screen(w, h, S);
-    } else {
-        radar(w, h, S);
-        status(w, h, S);
-        messages(w, h, S);
-        beacons(w, h, S);
-        objective_line(w, h, S);
-        shop_panel(w, h, S);
-        district_banner(w, h, S);
-        crosshair(w, h, S);
-        speedo(w, h, S);
-        if (big_until > game_s) {
-            float age = game_s - big_born, a = Clamp(fminf(age / 0.2f, (big_until - game_s) / 0.5f), 0, 1);
-            text(big_t, w / 2.0f, h * 0.3f, 72 * S, alpha(INK, a), 1);
-        }
-        if (map_held && mode == MODE_PLAY) full_map(w, h, S);
-        if (mode == MODE_DEAD || mode == MODE_BUSTED) end_card(w, h, S);
+    W = w; H = h;
+    S = fminf(h / 720.0f, w / 1280.0f) * (is_touch_device() ? 1.15f : 1.0f);
+    ui_blocks_game = ui_screen != UI_NONE;
+    if (mode == MODE_TITLE) {
+        if (ui_screen == UI_SETTINGS) settings_screen();
+        else if (ui_screen == UI_MODS) mods_screen();
+        else if (ui_screen == UI_HELP) help_screen();
+        else { ui_screen = UI_TITLE; title_screen(); }
+        return;
     }
-    EndBlendMode();
-    rlEnableBackfaceCulling();
+    if (sleep_fade > 0) DrawRectangle(0, 0, W, H, (Color){ 0, 0, 0, (unsigned char)(255 * Clamp(sleep_fade, 0, 1)) });
+    if (mode == MODE_DEAD) {
+        static float dead_t;
+        dead_t += GetFrameTime();
+        if (peds[PLAYER].state == PS_DEAD && pv[PLAYER].dead_s > 2.5f) { ui_screen = UI_DEAD; dead_screen(); }
+        messages();
+        return;
+    }
+    if (ui_screen == UI_NONE || ui_screen == UI_PAUSE) {
+        survival_panel();
+        world_panel();
+        next_stop();
+        car_gauges();
+        weapon_box();
+        crosshair();
+        search_ring();
+        danger_overlay();
+        prompt_line();
+        messages();
+        draw_touch();
+    }
+    switch (ui_screen) {
+    case UI_PACK: pack_screen(); break;
+    case UI_CRAFT: craft_screen(); break;
+    case UI_CAR: car_screen(); break;
+    case UI_TRADE: trade_screen(); break;
+    case UI_LOOT: loot_screen(); break;
+    case UI_MAP: map_screen(); break;
+    case UI_PAUSE: pause_screen(); break;
+    case UI_SETTINGS: settings_screen(); break;
+    case UI_MODS: mods_screen(); break;
+    case UI_HELP: help_screen(); break;
+    default: break;
+    }
+    if (ui_screen != UI_NONE && ui_screen != UI_PAUSE) messages();
 }

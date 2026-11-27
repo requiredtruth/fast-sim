@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "game.h"
-#include "cops.h"
 
 extern const unsigned char sfx_blob[];
 extern const int sfx_blob_len, sfx_rate, sfx_offsets[], sfx_clip_start[];
@@ -16,7 +15,11 @@ extern const int voice_blob_len, voice_rate, sfx_plain, voice_clip_start[];
 #define BLK 64
 #define NVOICE 48
 #define RING 8192
+#ifdef PLATFORM_WEB
+#define RING_TARGET 5200
+#else
 #define RING_TARGET 1600
+#endif
 #define NENG 6
 #define TAU 6.2831853f
 
@@ -41,27 +44,16 @@ static const struct { float vol, send, prio, mind, maxd, cd; } defs[S_COUNT] = {
     [S_CASH]        = { 0.55f, 0.00f, 3, 2, 40 },
     [S_BODYFALL]    = { 0.65f, 0.05f, 3, 2, 50 },
     [S_UI]          = { 0.45f, 0.00f, 8, 2, 40 },
-    [S_V_FREEZE]    = { 1.00f, 0.30f, 6, 4, 70, 7 },
-    [S_V_GROUND]    = { 1.00f, 0.30f, 6, 4, 70, 7 },
     [S_V_DROP]      = { 1.00f, 0.30f, 6, 4, 70, 8 },
-    [S_V_PULLOVER]  = { 1.00f, 0.30f, 6, 4, 80, 8 },
     [S_V_HANDS]     = { 1.00f, 0.30f, 6, 4, 70, 6 },
-    [S_V_SHOTS]     = { 1.00f, 0.30f, 6, 4, 90, 8 },
-    [S_V_ONFOOT]    = { 1.00f, 0.30f, 6, 4, 90, 10 },
-    [S_V_ARREST]    = { 1.00f, 0.30f, 7, 4, 70, 6 },
-    [S_V_NORTH]     = { 0.45f, 0.00f, 5, 50, 100, 20 },
-    [S_V_PURSUIT]   = { 0.45f, 0.00f, 5, 50, 100, 10 },
-    [S_V_LOST]      = { 0.45f, 0.00f, 5, 50, 100, 10 },
     [S_V_TAKEIT]    = { 0.95f, 0.20f, 6, 3, 50, 10 },
     [S_V_DONTSHOOT] = { 0.95f, 0.20f, 6, 3, 50, 10 },
     [S_V_OUTTA]     = { 1.00f, 0.20f, 6, 3, 50, 10 },
-    [S_V_PHONE]     = { 0.90f, 0.15f, 5, 3, 45, 12 },
     [S_V_NOTODAY]   = { 0.90f, 0.10f, 7, 50, 100, 6 },
     [S_V_SCREAM]    = { 0.75f, 0.25f, 5, 3, 90, 3 },
     [S_V_GRUNT]     = { 0.70f, 0.15f, 5, 2, 50, 2 },
     [S_V_MYCAR]     = { 0.95f, 0.25f, 5, 3, 60, 8 },
     [S_V_HELP]      = { 0.90f, 0.25f, 5, 3, 70, 5 },
-    [S_V_COPS]      = { 0.90f, 0.25f, 5, 3, 70, 8 },
     [S_V_WHAT]      = { 0.90f, 0.20f, 5, 3, 50, 6 },
     [S_V_WATCH]     = { 0.95f, 0.25f, 5, 3, 50, 5 },
     [S_V_GUN]       = { 0.95f, 0.25f, 5, 3, 70, 8 },
@@ -240,11 +232,10 @@ static uint32_t hash32(uint32_t x)
 
 void voice(int id, Vector3 p, float vol, int ped)
 {
-    if (id < S_V_FREEZE || id >= S_COUNT || !bank || vclock < line_cd[id]) return;
-    bool radio = id >= S_V_NORTH && id <= S_V_LOST;
-    if (radio) p = L.pos;
+    if (id < S_V_DROP || id >= S_COUNT || !bank || vclock < line_cd[id]) return;
+    bool radio = false;
     bool near = Vector3Distance(p, L.pos) < 40;
-    bool urgent = id == S_V_ARREST || id == S_V_NOTODAY;
+    bool urgent = id == S_V_NOTODAY;
     if (radio ? vclock < radio_until : near && !urgent && vclock < near_until) return;
     int first = sfx_offsets[id], n = sfx_offsets[id + 1] - first, pick = 0;
     float pitch = 1;
@@ -472,9 +463,25 @@ static struct {
     float cricket_t[2];
 } amb;
 
+static float wx_rain, wx_wind, wx_lp[4], wx_gust;
+
 static void ambience_block(float *dry)
 {
     amb.t += (float)BLK / RATE;
+    {
+        float r = wx_rain, w = wx_wind;
+        float a = lpcoef(300 + 500 * w), b = lpcoef(5000);
+        wx_gust += (anoise() * 0.02f - wx_gust * 0.0005f);
+        float g = 0.6f + 0.4f * sinf(amb.t * 0.37f) * sinf(amb.t * 0.11f + 1);
+        for (int i = 0; i < BLK; i++)
+            for (int ch = 0; ch < 2; ch++) {
+                float n = anoise();
+                wx_lp[ch] += a * (n - wx_lp[ch]);
+                wx_lp[2 + ch] += b * (n - wx_lp[2 + ch]);
+                float hi = n - wx_lp[2 + ch];
+                dry[i * 2 + ch] += wx_lp[ch] * 0.5f * w * w * g + (wx_lp[2 + ch] * 0.04f + hi * 0.03f) * r;
+            }
+    }
     amb.day += (amb.day_t - amb.day) * 0.003f;
     float night = 1 - amb.day;
     float swell = 0.7f + 0.3f * sinf(amb.t * 0.21f) * sinf(amb.t * 0.057f + 2);
@@ -706,12 +713,6 @@ static void aim_cars(void)
     }
 
     mute(&rotor.c);
-    Vector3 hp, hv;
-    if (cops_heli(&hp, &hv)) {
-        rotor.dop_t = doppler(hp, hv);
-        if (rotor.dop == 0) rotor.dop = rotor.dop_t;
-        aim(&rotor.c, hp, 25, 420, 0.9f);
-    }
 
     n = nearest(has_siren, 4, sel);
     for (int k = 0; k < n; k++) {
@@ -746,5 +747,9 @@ void audio_tick(float dt)
     aim_cars();
     float h = day_hours;
     amb.day_t = Clamp((h - 5) / 2, 0, 1) * Clamp((20 - h) / 2, 0, 1);
+    wx_rain = weather_rain + weather_snow * 0.15f;
+    wx_wind = Clamp(weather_wind + weather_dust * 0.5f, 0, 1.2f);
+    int pc = player_car();
+    if (pc >= 0) { wx_rain *= 0.6f; wx_wind *= 0.45f; }
     if (!audio_offline && live) pump();
 }

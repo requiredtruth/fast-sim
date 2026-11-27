@@ -1,5 +1,4 @@
 #include "city.h"
-#include "cops.h"
 #include "rlgl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,29 +7,32 @@
 #define GLSL(...) #__VA_ARGS__
 
 float day_hours;
+int quality = 2;
 Vector3 sun_dir;
 Matrix r_view, r_proj, r_vp;
 Vector3 r_cam_right, r_cam_up;
 Vector3 r_sun_col, r_amb_col, r_fog_col;
 float r_night;
 
-#define SH_SIZE 4096
+static int SH_SIZE = 4096;
 #define SH_HALF 80.0f
-#define MSAA 4
+static int MSAA = 4;
+static float render_scale = 1;
+static GLenum hdr_fmt = GL_RGBA16F, bloom_fmt = GL_R11F_G11F_B10F;
 #define NB 6
 
 // ---------------------------------------------------------------- shader plumbing
 
 enum { U_VP, U_MODEL, U_TINT, U_BONES, U_PAL, U_LVP, U_LDIR, U_LCOL, U_SUNDIR, U_MOONDIR, U_SUNGLOW, U_SKY,
        U_GND, U_TOP, U_HOR, U_FOG, U_FOGDEN, U_CAM, U_NIGHT, U_TIME, U_SHINFO, U_LIGHTS, U_LIGHTCOL,
-       U_NLIGHTS, U_LAMPS, U_NLAMPS, U_CELLS, U_INVVP, U_SRC, U_SRC2, U_TEXEL, U_EXPO, U_BLOOM, U_GRADE,
+       U_NLIGHTS, U_LAMPS, U_NLAMPS, U_CELLS, U_INVVP, U_SRC, U_SRC2, U_TEXEL, U_EXPO, U_BLOOM, U_GRADE, U_OFF,
        U_COUNT };
 
 static const char *uname[U_COUNT] = {
     "uVP", "uModel", "uTint", "uBones", "uPal", "uLVP", "uLDir", "uLCol", "uSunDir", "uMoonDir", "uSunGlow",
     "uSky", "uGnd", "uTop", "uHor", "uFog", "uFogDen", "uCam", "uNight", "uTime", "uShInfo", "uLights",
     "uLightCol", "uNLights", "uLamps", "uNLamps", "uCells", "uInvVP", "uSrc", "uSrc2", "uTexel", "uExpo",
-    "uBloom", "uGrade",
+    "uBloom", "uGrade", "uOff",
 };
 
 typedef struct { GLuint id; GLint u[U_COUNT]; unsigned stamp; } Prog;
@@ -119,12 +121,13 @@ static const char *VS_STATIC = GLSL(
     layout(location = 3) in vec4 aCol;
     layout(location = 5) in vec2 aLS;
     uniform mat4 uVP;
+    uniform vec3 uOff;
     out vec3 vPos; out vec2 vUV; out vec3 vN; out vec4 vCol;
     flat out float vLayer; out float vSeed; flat out int vFlag;
     void main() {
-        vPos = aPos; vUV = aUV; vN = aN; vCol = aCol; vLayer = aLS.x; vSeed = aLS.y;
+        vPos = aPos + uOff; vUV = aUV; vN = aN; vCol = aCol; vLayer = aLS.x; vSeed = aLS.y;
         vFlag = int(aCol.a * 255.0 + 0.5);
-        gl_Position = uVP * vec4(aPos, 1.0);
+        gl_Position = uVP * vec4(vPos, 1.0);
         if ((vFlag & 32) != 0) gl_Position.z -= gl_Position.w * 3e-6;
     });
 
@@ -134,10 +137,11 @@ static const char *VS_SHADOW_STATIC = GLSL(
     layout(location = 3) in vec4 aCol;
     layout(location = 5) in vec2 aLS;
     uniform mat4 uVP;
+    uniform vec3 uOff;
     out vec2 vUV; flat out float vLayer; flat out int vFlag;
     void main() {
         vUV = aUV; vLayer = aLS.x; vFlag = int(aCol.a * 255.0 + 0.5);
-        gl_Position = uVP * vec4(aPos, 1.0);
+        gl_Position = uVP * vec4(aPos + uOff, 1.0);
     });
 
 static const char *FS_SHADOW_STATIC = GLSL(
@@ -352,8 +356,9 @@ static const char *VS_WATER = GLSL(
     layout(location = 0) in vec3 aPos;
     layout(location = 5) in vec2 aLS;
     uniform mat4 uVP;
+    uniform vec3 uOff;
     out vec3 vPos; out float vDepth;
-    void main() { vPos = aPos; vDepth = aLS.y; gl_Position = uVP * vec4(aPos, 1.0); });
+    void main() { vPos = aPos + uOff; vDepth = aLS.y; gl_Position = uVP * vec4(vPos, 1.0); });
 
 static const char *FS_WATER = GLSL(
     in vec3 vPos; in float vDepth;
@@ -653,6 +658,7 @@ static struct {
 static int cur_pass = PASS_MAIN;
 static unsigned stamp = 1;
 static GLuint cur_prog;
+static Prog *cur_p;
 
 typedef struct { Vector3 p, c; float r; } Lt;
 static Lt lt_next[MAX_LIGHTS * 3];
@@ -666,6 +672,11 @@ static struct {
     float lights[MAX_LIGHTS * 4], lcols[MAX_LIGHTS * 3], lamps[32 * 4];
 } S;
 
+void r_set_offset(Vector3 off)
+{
+    if (cur_p && cur_p->u[U_OFF] >= 0) glUniform3f(cur_p->u[U_OFF], off.x, off.y, off.z);
+}
+
 void light_add(Vector3 p, Vector3 rgb, float radius)
 {
     for (int i = 0; i < n_next; i++)
@@ -676,6 +687,7 @@ void light_add(Vector3 p, Vector3 rgb, float radius)
 static void use(Prog *p)
 {
     if (cur_prog != p->id) { glUseProgram(p->id); cur_prog = p->id; }
+    cur_p = p;
     if (p->stamp == stamp) return;
     p->stamp = stamp;
 #define V3(i, v) if (p->u[i] >= 0) glUniform3f(p->u[i], (v).x, (v).y, (v).z)
@@ -724,6 +736,7 @@ static void free_targets(void)
     glDeleteFramebuffers(1, &T.res_fbo); glDeleteTextures(1, &T.res_tex);
     glDeleteFramebuffers(1, &T.ldr_fbo); glDeleteTextures(1, &T.ldr_tex);
     glDeleteFramebuffers(NB, T.b_fbo); glDeleteTextures(NB, T.b_tex);
+    T.w = 0;
 }
 
 static void make_targets(int w, int h)
@@ -734,7 +747,7 @@ static void make_targets(int w, int h)
     glBindFramebuffer(GL_FRAMEBUFFER, T.msaa_fbo);
     glGenRenderbuffers(1, &T.msaa_col);
     glBindRenderbuffer(GL_RENDERBUFFER, T.msaa_col);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA, GL_RGBA16F, w, h);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA, hdr_fmt, w, h);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, T.msaa_col);
     glGenRenderbuffers(1, &T.msaa_depth);
     glBindRenderbuffer(GL_RENDERBUFFER, T.msaa_depth);
@@ -742,7 +755,7 @@ static void make_targets(int w, int h)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, T.msaa_depth);
     fbo_check("msaa");
 
-    T.res_tex = make_tex(w, h, GL_RGBA16F, GL_RGBA, GL_FLOAT, GL_LINEAR);
+    T.res_tex = hdr_fmt == GL_RGBA16F ? make_tex(w, h, GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, GL_LINEAR) : make_tex(w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
     glGenFramebuffers(1, &T.res_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, T.res_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, T.res_tex, 0);
@@ -758,7 +771,8 @@ static void make_targets(int w, int h)
     for (int i = 0; i < NB; i++) {
         T.bw[i] = (w >> (i + 1)) > 1 ? w >> (i + 1) : 1;
         T.bh[i] = (h >> (i + 1)) > 1 ? h >> (i + 1) : 1;
-        T.b_tex[i] = make_tex(T.bw[i], T.bh[i], GL_R11F_G11F_B10F, GL_RGB, GL_FLOAT, GL_LINEAR);
+        T.b_tex[i] = bloom_fmt == GL_R11F_G11F_B10F ? make_tex(T.bw[i], T.bh[i], GL_R11F_G11F_B10F, GL_RGB, GL_FLOAT, GL_LINEAR)
+                                                    : make_tex(T.bw[i], T.bh[i], GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, T.b_fbo[i]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, T.b_tex[i], 0);
         fbo_check("bloom");
@@ -769,19 +783,18 @@ static void make_shadow_map(void)
 {
     glGenTextures(1, &shadow_tex);
     glBindTexture(GL_TEXTURE_2D, shadow_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SH_SIZE, SH_SIZE, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, SH_SIZE, SH_SIZE, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-    float border[4] = { 1, 1, 1, 1 };
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
     glGenFramebuffers(1, &shadow_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, shadow_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, shadow_tex, 0);
-    glDrawBuffer(GL_NONE);
+    GLenum none = GL_NONE;
+    glDrawBuffers(1, &none);
     glReadBuffer(GL_NONE);
     fbo_check("shadow");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);   // left bound, the live window drew into the shadow map
@@ -789,8 +802,22 @@ static void make_shadow_map(void)
 
 void render_init(void)
 {
+#ifdef GLES
+    const char *ver = "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2DArray;\nprecision highp sampler2DShadow;\nprecision highp sampler2D;\n";
+    // float colour targets need EXT_color_buffer_float; without it the scene renders in 8 bits
+    const char *ext = (const char *)glGetString(GL_EXTENSIONS);
+    bool fbf = false;
+    if (ext && (strstr(ext, "GL_EXT_color_buffer_float") || strstr(ext, "EXT_color_buffer_float"))) fbf = true;
+    if (!fbf) { GLint n = 0; glGetIntegerv(GL_NUM_EXTENSIONS, &n);
+        for (int i = 0; i < n; i++) { const char *e = (const char *)glGetStringi(GL_EXTENSIONS, i); if (e && strstr(e, "color_buffer_float")) fbf = true; } }
+    if (!fbf) { hdr_fmt = GL_RGBA8; bloom_fmt = GL_RGBA8; }
+#else
+    const char *ver = "#version 330 core\n";
+#endif
+    if (quality == 0) { SH_SIZE = 1536; MSAA = 2; render_scale = 0.72f; }
+    else if (quality == 1) { SH_SIZE = 2048; MSAA = 4; render_scale = 0.85f; }
     int n = snprintf(prelude, sizeof prelude,
-        "#version 330 core\nconst int L_PALM = %d, L_LEAF = %d, L_GRASS = %d, L_DETAIL = %d, L_SAND = %d, L_ASPHALT = %d, L_SIDEWALK = %d, L_QUAY = %d;\n",
+        "%sconst int L_PALM = %d, L_LEAF = %d, L_GRASS = %d, L_DETAIL = %d, L_SAND = %d, L_ASPHALT = %d, L_SIDEWALK = %d, L_QUAY = %d;\n", ver,
         L_PALM, L_LEAF, L_GRASS, L_DETAIL, L_SAND, L_ASPHALT, L_SIDEWALK, L_QUAY);
     (void)n;
 
@@ -824,6 +851,13 @@ void render_init(void)
 
     glGenVertexArrays(1, &vao_empty);
     make_shadow_map();
+}
+
+void render_set_quality(int q)
+{
+    quality = q;
+    if (q == 0) render_scale = 0.72f; else if (q == 1) render_scale = 0.85f; else render_scale = 1;
+    free_targets();
 }
 
 // ---------------------------------------------------------------- per frame scene
@@ -882,6 +916,19 @@ static void scene_colors(float e)
     Vector3 tint = mixv(mixv((Vector3){ 0.92f, 0.98f, 1.1f }, (Vector3){ 1.0f, 1.0f, 1.0f }, day), (Vector3){ 1.07f, 0.98f, 0.88f }, g);
     S.grade[0] = tint.x; S.grade[1] = tint.y; S.grade[2] = tint.z;
     S.grade[3] = Lerp(0.88f, 1.06f, day) + 0.06f * g;
+    // weather: overcast dims the sun, fog and dust close in
+    float over = fmaxf(fmaxf(weather_rain, weather_snow), fmaxf(weather_fog * 0.8f, weather_dust * 0.7f));
+    S.lcol = Vector3Scale(S.lcol, 1 - 0.62f * over);
+    S.sunglow = Vector3Scale(S.sunglow, 1 - 0.7f * over);
+    Vector3 grey = Vector3Scale((Vector3){ 0.5f, 0.52f, 0.55f }, 0.25f + 0.75f * day);
+    S.top = mixv(S.top, Vector3Scale(grey, 0.8f), over * 0.85f);
+    S.hor = mixv(S.hor, grey, over * 0.8f);
+    Vector3 dust = Vector3Scale((Vector3){ 0.62f, 0.44f, 0.26f }, 0.2f + 0.8f * day);
+    S.fog = mixv(S.fog, grey, fminf(1, (weather_fog + weather_rain * 0.6f + weather_snow) * 0.9f));
+    S.fog = mixv(S.fog, dust, weather_dust * 0.9f);
+    S.sky = mixv(S.sky, Vector3Scale(S.sky, 0.75f), over);
+    S.fogden *= 1.6f + weather_fog * 9 + weather_dust * 11 + weather_rain * 2.5f + weather_snow * 5;
+    S.grade[3] *= 1 - 0.25f * over;
     r_sun_col = S.lcol; r_amb_col = S.sky; r_fog_col = S.fog; r_night = S.night;
 }
 
@@ -1017,6 +1064,10 @@ void render_frame(int w, int h)
     GLint fbo, vp[4];
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
     glGetIntegerv(GL_VIEWPORT, vp);
+    int ow = w, oh = h;
+    w = (int)(ow * render_scale); h = (int)(oh * render_scale);
+    if (w < 16) w = 16;
+    if (h < 16) h = 16;
     if (w != T.w || h != T.h) make_targets(w, h);
 
     // camera, with shake
@@ -1029,7 +1080,7 @@ void render_frame(int w, int h)
         tgt = Vector3Add(tgt, Vector3Scale((Vector3){ sinf(tt * 67.0f + 3), sinf(tt * 77.0f + 4), sinf(tt * 61.0f + 5) }, sh * 0.12f));
     }
     r_view = MatrixLookAt(eye, tgt, cam.up);
-    r_proj = MatrixPerspective(cam.fovy * DEG2RAD, (float)w / h, 0.25f, 2800.0f);
+    r_proj = MatrixPerspective(cam.fovy * DEG2RAD, (float)ow / oh, 0.25f, 2400.0f);
     r_vp = MatrixMultiply(r_view, r_proj);
     Vector3 fwd = Vector3Normalize(Vector3Subtract(tgt, eye));
     r_cam_right = Vector3Normalize(Vector3CrossProduct(fwd, cam.up));
@@ -1069,7 +1120,8 @@ void render_frame(int w, int h)
         world_draw_part(GEO_SOLID);
         cars_draw(PASS_SHADOW);
         peds_draw(PASS_SHADOW);
-        cops_draw(PASS_SHADOW);
+        raiders_draw(PASS_SHADOW);
+        survive_draw(PASS_SHADOW);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glDisable(GL_POLYGON_OFFSET_FILL);
     } else {
@@ -1103,7 +1155,8 @@ void render_frame(int w, int h)
     cars_draw(PASS_MAIN);
     peds_draw(PASS_MAIN);
     pickups_draw(PASS_MAIN);
-    cops_draw(PASS_MAIN);
+    raiders_draw(PASS_MAIN);
+    survive_draw(PASS_MAIN);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -1137,7 +1190,7 @@ void render_frame(int w, int h)
     glBlendEquation(GL_FUNC_ADD);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
-    if (getenv("OOP_BENCH")) {
+    if (0) {
         glFinish();
         bench_t = GetTime() - t_start;
         if (bench_n++ > 5) bench_sum += bench_t;

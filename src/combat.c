@@ -6,14 +6,15 @@
 #include "city.h"
 #include "combat.h"
 
-const Weapon weapons[W_COUNT] = {
-    [W_FIST]    = { "Fists",   12, 2.4f,  0,      1.7f, 0,  1, 0 },
-    [W_PISTOL]  = { "Pistol",  25, 3.8f,  0.012f, 90,   12, 1, 1.5f },
-    [W_SMG]     = { "SMG",     14, 11,    0.04f,  80,   30, 1, 1.9f },
-    [W_SHOTGUN] = { "Shotgun", 14, 1.15f, 0.075f, 45,   6,  8, 2.8f },
-};
+void cont_drop(Vector3 p, int kind);
 
-int cash;
+const Weapon weapons[W_COUNT] = {
+    [W_FIST]    = { "Fists",         12, 2.4f,  0,      1.7f, 0, 1, 0 },
+    [W_PISTOL]  = { "Revolver",      30, 2.6f,  0.012f, 90,   6, 1, 2.2f },
+    [W_RIFLE]   = { "Hunting rifle", 70, 0.9f,  0.003f, 180,  5, 1, 2.8f },
+    [W_SHOTGUN] = { "Shotgun",       14, 1.1f,  0.075f, 45,   2, 8, 2.4f },
+    [W_BAT]     = { "Lead pipe",     24, 1.6f,  0,      2.2f, 0, 1, 0 },
+};
 float shot_age = 99;
 float mode_since;
 bool map_held;
@@ -189,9 +190,10 @@ static bool hurt_ped(int i, float dmg, Vector3 imp, int by, int weapon)
     bool was_alive = p->used && p->state != PS_DEAD;
     ped_damage(i, dmg, imp, by, weapon);
     bool dead = was_alive && peds[i].state == PS_DEAD;
-    if (by == PLAYER && i != PLAYER && was_alive) {
-        bool cop = p->kind == PED_COP;
-        crime(dead ? (cop ? CR_COP_MURDER : CR_MURDER) : (cop ? CR_COP_ASSAULT : CR_ASSAULT), p->pos, i);
+    if (by == PLAYER && i != PLAYER && dead) sv.kills++;
+    if (by == PLAYER && i != PLAYER && !dead && peds[i].used && peds[i].kind == PED_COP && peds[i].state == PS_IDLE) { peds[i].state = PS_CHASE; peds[i].target = PLAYER; }
+    if (by == PLAYER && i != PLAYER && was_alive && !dead && peds[i].kind == PED_CIV && peds[i].role == ROLE_TRADER) {
+        peds[i].kind = PED_COP; peds[i].role = ROLE_RAIDER; peds[i].state = PS_CHASE; peds[i].target = PLAYER;   // they fight back
     }
     return dead;
 }
@@ -255,11 +257,11 @@ bool fire_weapon(int pi, Vector3 from, Vector3 dir)
 
     ped_play(pi, A_PISTOL_SHOOT);
     fx_burst(FX_MUZZLE, from, dir, 1);
-    static const int snd[W_COUNT] = { S_PUNCH, S_PISTOL, S_SMG, S_SHOTGUN };
-    sfx(snd[p->weapon], from, me ? 1.0f : 0.85f, frand(0.96f, 1.04f));
-    if (me) fx_shake(p->weapon == W_SHOTGUN ? 0.22f : p->weapon == W_SMG ? 0.04f : 0.06f);
+    static const int snd[W_COUNT] = { S_PUNCH, S_PISTOL, S_SMG, S_SHOTGUN, S_PUNCH };
+    sfx(snd[p->weapon], from, me ? 1.0f : 0.85f, p->weapon == W_RIFLE ? frand(0.7f, 0.75f) : frand(0.96f, 1.04f));
+    if (me) fx_shake(p->weapon == W_SHOTGUN ? 0.22f : p->weapon == W_RIFLE ? 0.16f : 0.08f);
     if (alarm_cd <= 0) { ped_alarm(from, me ? 60 : 45, pi); alarm_cd = 0.5f; }
-    if (me && shots_cd <= 0 && people_near(from, 45, PLAYER)) { crime(CR_SHOTS, p->pos, -1); shots_cd = 2.5f; }
+    (void)people_near;
 
     Vector3 right = Vector3CrossProduct(dir, v3(0, 1, 0));
     if (Vector3LengthSqr(right) < 1e-4f) right = v3(1, 0, 0);
@@ -277,7 +279,11 @@ bool fire_weapon(int pi, Vector3 from, Vector3 dir)
         bool hit = shoot_ray(from, d, w->range, pi, p->car, &h);
         bool hd = head_hit;
         Vector3 end = hit ? h.p : Vector3Add(from, Vector3Scale(d, w->range));
-        if (!tracer_done && (p->weapon == W_SMG ? shot_count % 3 == 0 : rnd() % 100 < 45)) {
+        if (me) {
+            float ta;
+            if (hunt_hit(from, d, hit ? h.t : w->range, w->dmg, &ta)) { hit = false; end = Vector3Add(from, Vector3Scale(d, ta)); }
+        }
+        if (!tracer_done && rnd() % 100 < 45) {
             fx_tracer(from, end);
             tracer_done = true;
         }
@@ -294,7 +300,6 @@ bool fire_weapon(int pi, Vector3 from, Vector3 dir)
         } else if (h.kind == HIT_CAR) {
             Car *c = &cars[h.id];
             car_damage(h.id, dmg * (me ? CAR_DMG_MUL : 2.2f), h.p, pi);
-            if (me && (c->ai == AI_COP || (c->driver >= 0 && peds[c->driver].kind == PED_COP))) crime(CR_COP_ASSAULT, h.p, c->driver);
             if (c->driver >= 0 && peds[c->driver].used && rnd() % 100 < 22) {
                 Matrix mx = car_matrix(c);
                 if (h.p.y > mx.m13 + car_models[c->model].size.y * 0.5f) {
@@ -373,7 +378,7 @@ void explode(Vector3 p, float radius, int attacker)
         destroyed = true;
     }
     (void)destroyed;
-    if (attacker == PLAYER && from_car) crime(CR_DESTROY_CAR, p, -1);
+    (void)from_car;
 }
 
 static void pending_tick(float dt)
@@ -388,353 +393,22 @@ static void pending_tick(float dt)
     }
 }
 
-// ---- pickups
+// ---- weapons live in the pack
 
-typedef struct { Vector3 pos; int type, amount; float respawn, life; bool active, temp; } Pickup;
-#define MAX_PICK 80
-static Pickup picks[MAX_PICK];
-static int npicks;
-static Mesh pk_mesh[PK_TYPES], pad_mesh, ammo_mesh;
-static bool pk_meshes;
+static int ammo_of(int w) { return cur_weapon_ammo_item(w); }
 
-static uint32_t hash(uint32_t x)
+bool weapon_owned(int w) { return w == W_FIST || owned[w]; }
+void weapon_give(int w) { if (w > W_FIST && w < W_COUNT) owned[w] = true; }
+void weapon_take(int w)
 {
-    x ^= x >> 16; x *= 0x7feb352d; x ^= x >> 15; x *= 0x846ca68b; x ^= x >> 16;
-    return x;
+    if (w <= W_FIST || w >= W_COUNT) return;
+    owned[w] = false;
+    stored_clip[w] = 0;
+    if (peds[PLAYER].weapon == w) { weapon_stow(); }
 }
 
-static void pick_add(Vector3 at, int type, int amount, bool temp, float life)
-{
-    int slot = -1;
-    for (int i = 0; i < npicks; i++) if (!picks[i].active && picks[i].temp && picks[i].respawn <= 0) { slot = i; break; }
-    if (slot < 0 && npicks < MAX_PICK) slot = npicks++;
-    if (slot < 0) return;
-    picks[slot] = (Pickup){ at, type, amount, 0, life, true, temp };
-}
-
-void pickup_drop(Vector3 at, int type, int amount)
-{
-    at.y = ground_y(at.x, at.z);
-    pick_add(at, type, amount, true, 90);
-}
-
-static void place_pickups(void)
-{
-    static const int plan[] = {
-        PK_SMG, PK_HEALTH, PK_SHOTGUN, PK_ARMOR,
-        PK_PISTOL, PK_AMMO, PK_AMMO, PK_HEALTH, PK_SMG, PK_ARMOR, PK_AMMO, PK_SHOTGUN, PK_HEALTH,
-        PK_SMG, PK_AMMO, PK_ARMOR, PK_HEALTH, PK_PISTOL, PK_SHOTGUN, PK_AMMO, PK_SMG, PK_HEALTH, PK_ARMOR, PK_AMMO, PK_SHOTGUN,
-    };
-    static const float near_lo[4] = { 18, 30, 55, 80 }, near_hi[4] = { 34, 48, 80, 120 };
-    int n = (int)(sizeof plan / sizeof plan[0]);
-    if (nwalk <= 0) return;
-    for (int k = 0; k < n; k++) {
-        int best = -1;
-        uint32_t best_key = ~0u;
-        for (int j = 0; j < nwalk; j++) {
-            Vector3 q = walk[j].p;
-            if (walk[j].light >= 0 || fabsf(q.x) > 600 || fabsf(q.z) > 600) continue;
-            float d = dist_xz(q, police_pos);
-            if (k < 4 ? (d < near_lo[k] || d > near_hi[k]) : d < 40) continue;
-            bool clash = false;
-            for (int m = 0; m < npicks && !clash; m++) clash = dist_xz(picks[m].pos, q) < (k < 4 ? 20 : 60);
-            if (clash) continue;
-            uint32_t key = hash(j * 2654435761u + k * 97 + 5);
-            if (key < best_key) { best_key = key; best = j; }
-        }
-        if (best < 0) continue;
-        Vector3 q = walk[best].p;
-        q.y = ground_y(q.x, q.z);
-        int t = plan[k];
-        int amount = t == PK_HEALTH ? 50 : t == PK_ARMOR ? 100 : 0;
-        pick_add(q, t, amount, false, 0);
-    }
-}
-
-static void give_weapon(int w, int rounds)
-{
-    Ped *p = &peds[PLAYER];
-    bool had = owned[w];
-    owned[w] = true;
-    if (!had) {
-        p->ammo[w] += rounds;
-        stored_clip[w] = fminf(weapons[w].clip, p->ammo[w]);
-        p->ammo[w] -= stored_clip[w];
-    } else p->ammo[w] += rounds;
-}
-
-bool shop_open;
-
-bool give_item(int type)
-{
-    Ped *p = &peds[PLAYER];
-    switch (type) {
-    case PK_PISTOL: give_weapon(W_PISTOL, 24); break;
-    case PK_SMG: give_weapon(W_SMG, 60); break;
-    case PK_SHOTGUN: give_weapon(W_SHOTGUN, 18); break;
-    case PK_AMMO: {
-        bool any = false;
-        for (int w = W_PISTOL; w < W_COUNT; w++) if (owned[w]) { p->ammo[w] += weapons[w].clip * 2; any = true; }
-        if (!any) return false;
-        break; }
-    case PK_ARMOR:
-        if (p->armor >= 100) return false;
-        p->armor = 100;
-        break;
-    default: return false;
-    }
-    sfx(S_PICKUP, p->pos, 0.8f, 1);
-    return true;
-}
-
-static void pick_up(Pickup *k)
-{
-    Ped *p = &peds[PLAYER];
-    char msg[48];
-    switch (k->type) {
-    case PK_PISTOL: give_weapon(W_PISTOL, 24); hud_msg("Pistol", 2); break;
-    case PK_SMG: give_weapon(W_SMG, 60); hud_msg("SMG", 2); break;
-    case PK_SHOTGUN: give_weapon(W_SHOTGUN, 18); hud_msg("Shotgun", 2); break;
-    case PK_AMMO: {
-        bool any = false;
-        for (int w = W_PISTOL; w < W_COUNT; w++) if (owned[w]) { p->ammo[w] += weapons[w].clip * 2; any = true; }
-        if (!any) return;
-        hud_msg("Ammo", 2);
-        break; }
-    case PK_HEALTH:
-        if (p->health >= 100) return;
-        p->health = fminf(100, p->health + k->amount);
-        hud_msg("Health", 2);
-        break;
-    case PK_ARMOR:
-        if (p->armor >= 100) return;
-        p->armor = 100;
-        hud_msg("Body armor", 2);
-        break;
-    default:
-        cash += k->amount;
-        snprintf(msg, sizeof msg, "+$%d", k->amount);
-        hud_msg(msg, 1.5f);
-        sfx(S_CASH, p->pos, 0.7f, 1);
-        k->active = false;
-        return;
-    }
-    sfx(S_PICKUP, p->pos, 0.8f, 1);
-    k->active = false;
-    k->respawn = PICK_RESPAWN_S;
-}
-
-static void pickups_tick(float dt)
-{
-    Ped *p = &peds[PLAYER];
-    bool afoot = p->car < 0 && (p->state == PS_IDLE || p->state == PS_WALK);
-    for (int i = 0; i < npicks; i++) {
-        Pickup *k = &picks[i];
-        if (k->active) {
-            if (k->temp && (k->life -= dt) <= 0) { k->active = false; k->respawn = 0; continue; }
-            if (afoot && dist_xz(k->pos, p->pos) < 1.4f && fabsf(k->pos.y - p->pos.y) < 2) pick_up(k);
-        } else if (!k->temp && (k->respawn -= dt) <= 0) k->active = true;
-    }
-}
-
-int pickups_view(PickView *out, int max)
-{
-    int n = 0;
-    for (int i = 0; i < npicks && n < max; i++)
-        if (picks[i].active) out[n++] = (PickView){ picks[i].pos, picks[i].type };
-    return n;
-}
-
-typedef struct { float cx, cy, cz, hx, hy, hz; unsigned char r, g, b; } BoxDef;
-
-static Mesh build_mesh(const BoxDef *b, int n)
-{
-    Mesh m = { 0 };
-    m.vertexCount = n * 24;
-    m.triangleCount = n * 12;
-    m.vertices = MemAlloc(m.vertexCount * 3 * sizeof(float));
-    m.normals = MemAlloc(m.vertexCount * 3 * sizeof(float));
-    m.colors = MemAlloc(m.vertexCount * 4);
-    m.indices = MemAlloc(m.triangleCount * 3 * sizeof(unsigned short));
-    int vi = 0, ii = 0;
-    for (int i = 0; i < n; i++) {
-        float c[3] = { b[i].cx, b[i].cy, b[i].cz }, h[3] = { b[i].hx, b[i].hy, b[i].hz };
-        for (int f = 0; f < 6; f++) {
-            int a = f / 2, t1 = (a + 1) % 3, t2 = (a + 2) % 3;
-            float s = f % 2 ? -1 : 1;
-            for (int q = 0; q < 4; q++) {
-                float pos[3];
-                pos[a] = c[a] + s * h[a];
-                pos[t1] = c[t1] + ((q & 1) ? 1 : -1) * h[t1];
-                pos[t2] = c[t2] + ((q & 2) ? 1 : -1) * h[t2];
-                float nrm[3] = { 0, 0, 0 };
-                nrm[a] = s;
-                for (int k = 0; k < 3; k++) { m.vertices[vi * 3 + k] = pos[k]; m.normals[vi * 3 + k] = nrm[k]; }
-                m.colors[vi * 4] = b[i].r; m.colors[vi * 4 + 1] = b[i].g; m.colors[vi * 4 + 2] = b[i].b; m.colors[vi * 4 + 3] = 255;
-                vi++;
-            }
-            int base = vi - 4;
-            static const int quad[6] = { 0, 1, 3, 0, 3, 2 };
-            for (int k = 0; k < 6; k++) m.indices[ii++] = base + quad[k];
-        }
-    }
-    UploadMesh(&m, false);
-    return m;
-}
-
-static void build_pickup_meshes(void)
-{
-    pk_meshes = true;
-    BoxDef med[16];
-    int n = 0;
-    med[n++] = (BoxDef){ 0, 0.17f, 0, 0.26f, 0.17f, 0.17f, 238, 240, 242 };
-    med[n++] = (BoxDef){ 0, 0.345f, 0, 0.15f, 0.012f, 0.045f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.345f, 0, 0.045f, 0.012f, 0.15f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.17f, 0.172f, 0.13f, 0.04f, 0.012f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.17f, 0.172f, 0.04f, 0.13f, 0.012f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.17f, -0.172f, 0.13f, 0.04f, 0.012f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.17f, -0.172f, 0.04f, 0.13f, 0.012f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0.262f, 0.17f, 0, 0.012f, 0.04f, 0.1f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0.262f, 0.17f, 0, 0.012f, 0.1f, 0.04f, 210, 48, 44 };
-    med[n++] = (BoxDef){ -0.262f, 0.17f, 0, 0.012f, 0.04f, 0.1f, 210, 48, 44 };
-    med[n++] = (BoxDef){ -0.262f, 0.17f, 0, 0.012f, 0.1f, 0.04f, 210, 48, 44 };
-    med[n++] = (BoxDef){ 0, 0.37f, 0, 0.09f, 0.02f, 0.025f, 120, 126, 132 };
-    pk_mesh[PK_HEALTH] = build_mesh(med, n);
-
-    BoxDef vest[16];
-    n = 0;
-    vest[n++] = (BoxDef){ 0, 0.3f, 0.07f, 0.24f, 0.28f, 0.05f, 52, 70, 104 };
-    vest[n++] = (BoxDef){ 0, 0.3f, -0.07f, 0.24f, 0.28f, 0.05f, 44, 60, 92 };
-    vest[n++] = (BoxDef){ 0.16f, 0.6f, 0, 0.065f, 0.035f, 0.12f, 64, 84, 122 };
-    vest[n++] = (BoxDef){ -0.16f, 0.6f, 0, 0.065f, 0.035f, 0.12f, 64, 84, 122 };
-    vest[n++] = (BoxDef){ 0.255f, 0.24f, 0, 0.018f, 0.2f, 0.12f, 30, 38, 56 };
-    vest[n++] = (BoxDef){ -0.255f, 0.24f, 0, 0.018f, 0.2f, 0.12f, 30, 38, 56 };
-    vest[n++] = (BoxDef){ 0, 0.17f, 0.124f, 0.16f, 0.07f, 0.012f, 78, 100, 140 };
-    vest[n++] = (BoxDef){ 0, 0.4f, 0.124f, 0.09f, 0.1f, 0.012f, 130, 176, 232 };
-    pk_mesh[PK_ARMOR] = build_mesh(vest, n);
-
-    BoxDef cashb[16];
-    n = 0;
-    for (int s = 0; s < 3; s++) {
-        float x = s == 2 ? 0 : (s ? 0.19f : -0.19f), y = s == 2 ? 0.145f : 0.05f;
-        cashb[n++] = (BoxDef){ x, y, 0, 0.17f, 0.048f, 0.1f, 62, 140, 84 };
-        cashb[n++] = (BoxDef){ x, y + 0.046f, 0, 0.165f, 0.004f, 0.095f, 126, 190, 128 };
-        cashb[n++] = (BoxDef){ x, y, 0, 0.04f, 0.05f, 0.102f, 232, 228, 200 };
-    }
-    pk_mesh[PK_CASH] = build_mesh(cashb, n);
-
-    BoxDef pad[2] = { { 0, 0.012f, 0, 0.38f, 0.012f, 0.38f, 40, 46, 56 }, { 0, 0.026f, 0, 0.3f, 0.008f, 0.3f, 255, 168, 48 } };
-    pad_mesh = build_mesh(pad, 2);
-    BoxDef box[8];
-    n = 0;
-    box[n++] = (BoxDef){ 0, 0.14f, 0, 0.26f, 0.14f, 0.15f, 92, 104, 72 };
-    box[n++] = (BoxDef){ 0, 0.285f, 0, 0.27f, 0.012f, 0.16f, 74, 84, 58 };
-    box[n++] = (BoxDef){ 0, 0.15f, 0.152f, 0.14f, 0.05f, 0.008f, 232, 190, 70 };
-    box[n++] = (BoxDef){ 0, 0.15f, -0.152f, 0.14f, 0.05f, 0.008f, 232, 190, 70 };
-    ammo_mesh = build_mesh(box, n);
-}
-
-void pickups_draw(int pass)
-{
-    if (pass != PASS_MAIN || npicks == 0) return;
-    if (!pk_meshes) build_pickup_meshes();
-    int lit = 0;
-    for (int i = 0; i < npicks; i++) {
-        Pickup *k = &picks[i];
-        if (!k->active) continue;
-        float d2 = Vector3DistanceSqr(k->pos, cam.position);
-        if (d2 > 140 * 140) continue;
-        float spin = game_s * 1.1f + i * 1.7f;
-        float bob = sinf(game_s * 2 + i) * 0.06f;
-        Matrix at = MatrixTranslate(k->pos.x, k->pos.y, k->pos.z);
-        Color padc = WHITE;
-        switch (k->type) {
-        case PK_PISTOL: case PK_SMG: case PK_SHOTGUN: {
-            Mesh g = gun_mesh[k->type == PK_PISTOL ? W_PISTOL : k->type == PK_SMG ? W_SMG : W_SHOTGUN];
-            Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(1.5f, 1.5f, 1.5f), MatrixRotateY(spin)), MatrixTranslate(k->pos.x, k->pos.y + 0.9f + bob, k->pos.z));
-            draw_mesh(g, m, WHITE, MAT_PROP);
-            padc = (Color){ 255, 190, 90, 255 };
-            break; }
-        case PK_AMMO: {
-            Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(1.2f, 1.2f, 1.2f), MatrixRotateY(spin)), MatrixTranslate(k->pos.x, k->pos.y + 0.62f + bob, k->pos.z));
-            draw_mesh(ammo_mesh, m, WHITE, MAT_PROP);
-            padc = (Color){ 255, 190, 90, 255 };
-            break; }
-        case PK_CASH: {
-            Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(0.8f, 0.8f, 0.8f), MatrixRotateY(spin)), MatrixTranslate(k->pos.x, k->pos.y + 0.5f + bob, k->pos.z));
-            draw_mesh(pk_mesh[PK_CASH], m, WHITE, MAT_PROP);
-            padc = (Color){ 130, 220, 150, 255 };
-            break; }
-        default: {
-            Matrix m = MatrixMultiply(MatrixMultiply(MatrixScale(1.3f, 1.3f, 1.3f), MatrixRotateY(spin)), MatrixTranslate(k->pos.x, k->pos.y + 0.55f + bob, k->pos.z));
-            draw_mesh(pk_mesh[k->type], m, WHITE, MAT_PROP);
-            padc = k->type == PK_HEALTH ? (Color){ 255, 120, 110, 255 } : (Color){ 130, 180, 255, 255 };
-            break; }
-        }
-        if (k->type != PK_CASH) draw_mesh(pad_mesh, at, padc, MAT_PROP);
-        if (r_night > 0.25f && lit < 3 && d2 < 50 * 50) {
-            Vector3 col = k->type == PK_HEALTH ? v3(1.4f, 0.4f, 0.35f) : k->type == PK_ARMOR ? v3(0.5f, 0.8f, 1.6f)
-                        : k->type == PK_CASH ? v3(0.5f, 1.3f, 0.6f) : v3(1.5f, 1.0f, 0.4f);
-            light_add(Vector3Add(k->pos, v3(0, 0.6f, 0)), col, 4.5f);
-            lit++;
-        }
-    }
-}
-
-// ---- shops and robberies
-
-typedef struct { int ped, state; float got, total, lost_t, alarm_t, dead_until, say_t; } Rob;
-enum { R_IDLE, R_ROB, R_DONE };
-static Rob *rob;
-
-static void clerk_upkeep(int s, float dt)
-{
-    Rob *r = &rob[s];
-    Shop *sh = &shops[s];
-    Ped *pl = &peds[PLAYER];
-    float d = dist_xz(pl->pos, sh->inside);
-    if (r->ped >= 0) {
-        Ped *c = &peds[r->ped];
-        if (!c->used) r->ped = -1;
-        else if (c->state == PS_DEAD) {
-            if (r->state == R_ROB) pickup_drop(c->pos, PK_CASH, (int)r->got + 20 + rnd() % 80);
-            r->ped = -1;
-            r->dead_until = game_s + 180;
-            r->state = R_IDLE;
-        } else if (d > 130 && r->state != R_ROB) { ped_remove(r->ped); r->ped = -1; }
-    }
-    if (r->ped < 0 && d < 90 && game_s > r->dead_until) {
-        int i = ped_spawn(PED_CIV, sh->inside, sh->yaw);
-        if (i < 0) return;
-        peds[i].state = PS_IDLE;
-        peds[i].timer = 99;
-        peds[i].target = -1;
-        r->ped = i;
-    }
-    if (r->ped < 0) return;
-    Ped *c = &peds[r->ped];
-    if (c->state == PS_RAGDOLL || staggering(r->ped)) return;
-    if (r->state == R_ROB) c->state = PS_HANDS_UP;
-    else if (c->state == PS_FLEE || c->state == PS_WALK || c->state == PS_HANDS_UP) { c->state = PS_COWER; c->timer = 2; c->node = c->next_node = -1; }
-    else if (c->state == PS_IDLE) c->timer = 99;
-    if (c->state == PS_IDLE || c->state == PS_HANDS_UP || c->state == PS_COWER) {
-        Vector3 look = r->state == R_ROB ? Vector3Subtract(pl->pos, c->pos) : v3(sinf(sh->yaw), 0, cosf(sh->yaw));
-        float want = atan2f(look.x, look.z);
-        c->yaw += Clamp(angle_diff(c->yaw, want), -8 * dt, 8 * dt);
-        c->vel = v3(0, 0, 0);
-    }
-}
-
-bool rob_view(float *frac, int *got_cash)
-{
-    for (int s = 0; rob && s < nshops; s++) {
-        if (rob[s].state != R_ROB) continue;
-        *frac = Clamp(rob[s].got / rob[s].total, 0, 1);
-        *got_cash = (int)fminf(rob[s].got, rob[s].total);
-        return true;
-    }
-    return false;
-}
+void pickups_draw(int pass) { (void)pass; }
+void combat_shift(Vector3 d) { aim_from = Vector3Subtract(aim_from, d); }
 
 static bool aiming_at(Vector3 target_pt, float maxd)
 {
@@ -744,69 +418,6 @@ static bool aiming_at(Vector3 target_pt, float maxd)
     if (t < 0 || t > maxd) return false;
     Vector3 perp = Vector3Subtract(to, Vector3Scale(aim_dir, t));
     return Vector3Length(perp) < 1.1f;
-}
-
-static void robbery_tick(float dt)
-{
-    if (nshops <= 0) return;
-    if (!rob) {
-        rob = calloc(nshops, sizeof *rob);
-        for (int s = 0; s < nshops; s++) rob[s].ped = -1;
-    }
-    Ped *pl = &peds[PLAYER];
-    char msg[48];
-    for (int s = 0; s < nshops; s++) {
-        Rob *r = &rob[s];
-        clerk_upkeep(s, dt);
-        Shop *sh = &shops[s];
-        if (r->alarm_t > 0 && (r->alarm_t -= dt) <= 0) {
-            crime(CR_ROBBERY, sh->door, r->ped);
-            if (r->ped >= 0) voice(S_V_OUTTA, peds[r->ped].pos, 1, -1);
-            if (r->state == R_DONE) r->state = R_IDLE;
-        }
-        if (r->ped < 0 || peds[r->ped].state == PS_DEAD || staggering(r->ped)) continue;
-        Ped *c = &peds[r->ped];
-        float d = Vector3Distance(pl->pos, c->pos);
-        bool armed_aim = aim_live && pl->weapon != W_FIST && d < 10;
-        Vector3 cp = Vector3Add(c->pos, v3(0, 1.3f, 0));
-        bool at = armed_aim && aiming_at(cp, 12);
-        if (at) {
-            Hit h;
-            Vector3 to = Vector3Normalize(Vector3Subtract(cp, aim_from));
-            if (world_ray(aim_from, to, Vector3Distance(aim_from, cp) - 0.4f, &h)) at = false;
-        }
-        if (r->state == R_IDLE && at && game_s - sh->robbed_at > ROB_COOLDOWN_S && r->alarm_t <= 0) {
-            r->state = R_ROB;
-            r->got = 0;
-            r->total = 150 + (float)(rnd() % 751);
-            r->lost_t = 0;
-            r->say_t = 0;
-            hud_msg("Hands up", 1.5f);
-            voice(rnd() & 1 ? S_V_TAKEIT : S_V_DONTSHOOT, c->pos, 1, -1);
-        } else if (r->state == R_ROB) {
-            if (at) {
-                r->lost_t = 0;
-                r->got += r->total * dt / (d < 3.5f ? 4.5f : 7.5f);
-                if (r->got >= r->total) {
-                    cash += (int)r->total;
-                    snprintf(msg, sizeof msg, "Got $%d. Go.", (int)r->total);
-                    hud_msg(msg, 3);
-                    sfx(S_CASH, c->pos, 1, 1);
-                    sh->robbed_at = game_s;
-                    r->state = R_DONE;
-                    r->alarm_t = 4.5f;
-                    c->state = PS_COWER;
-                    c->timer = 6;
-                }
-            } else if ((r->lost_t += dt) > 0.7f) {
-                c->state = PS_COWER;
-                c->timer = 3;
-                r->state = R_IDLE;
-                if (rnd() % 100 < 70) { r->alarm_t = 3.5f; hud_msg("They hit the alarm", 2.5f); }
-                else hud_msg("They calmed down", 2);
-            }
-        }
-    }
 }
 
 // ---- the player
@@ -838,7 +449,7 @@ static void cycle_weapon(int dir)
     int w = wanted_weapon;
     for (int k = 0; k < W_COUNT; k++) {
         w = (w + dir + W_COUNT) % W_COUNT;
-        if (w == W_FIST || owned[w]) break;
+        if (w == W_FIST || weapon_owned(w)) break;
     }
     if (w == wanted_weapon) return;
     wanted_weapon = w;
@@ -852,7 +463,7 @@ static void start_reload(void)
 {
     Ped *p = &peds[PLAYER];
     const Weapon *w = &weapons[p->weapon];
-    if (p->weapon == W_FIST || p->reload_s > 0 || p->clip_ammo >= w->clip || p->ammo[p->weapon] <= 0) return;
+    if (p->weapon == W_FIST || p->weapon == W_BAT || p->reload_s > 0 || p->clip_ammo >= w->clip || p->ammo[p->weapon] <= 0) return;
     p->reload_s = w->reload_s;
     ped_play(PLAYER, A_PISTOL_RELOAD);
     sfx(S_RELOAD, p->pos, 0.8f, 1);
@@ -919,16 +530,22 @@ static void punch_tick(const Input *in, float dt)
     combo_s -= dt;
     if (punch_t > 0 && (punch_t -= dt) <= 0) {
         bool heavy = punch_n % 3 == 2;
-        int t = melee_target(p->yaw, 2.1f, 1.15f);
+        bool pipe = p->weapon == W_BAT;
+        int t = melee_target(p->yaw, pipe ? 2.5f : 2.1f, 1.15f);
         Vector3 f = v3(sinf(p->yaw), 0, cosf(p->yaw));
         if (t >= 0) {
             Vector3 imp = Vector3Add(Vector3Scale(f, heavy ? 9.5f : 3.6f), v3(0, heavy ? 1.6f : 0, 0));
             sfx(S_HIT, peds[t].pos, 0.9f, heavy ? 0.85f : frand(0.95f, 1.1f));
             fx_burst(FX_BLOOD, Vector3Add(peds[t].pos, v3(0, 1.45f, 0)), f, heavy ? 5 : 2);
             fx_shake(heavy ? 0.12f : 0.04f);
-            hurt_ped(t, heavy ? 26 : 11, imp, PLAYER, W_FIST);
+            hurt_ped(t, (heavy ? 26 : 11) * (pipe ? 2.1f : 1), imp, PLAYER, W_FIST);
             if (peds[t].kind == PED_CIV) voice(S_V_WHAT, peds[t].pos, 1, t);
-        } else sfx(S_PUNCH, p->pos, 0.35f, 1.3f);
+        } else {
+            sfx(S_PUNCH, p->pos, 0.35f, 1.3f);
+            float ta;
+            Vector3 f3 = v3(sinf(p->yaw), 0, cosf(p->yaw));
+            if (pipe || heavy) hunt_hit(Vector3Add(p->pos, v3(0, 1.0f, 0)), f3, pipe ? 2.6f : 2.0f, pipe ? 45 : 20, &ta);
+        }
     }
     if (!(in->held & BTN_FIRE) || p->fire_cd > 0 || punch_t > 0) return;
     if (combo_s > 0) punch_n++; else punch_n = 0;
@@ -948,6 +565,7 @@ static void gun_tick(const Input *in, float dt)
     p->fire_cd -= dt;
     if (p->reload_s > 0 && (p->reload_s -= dt) <= 0) {
         int need = weapons[p->weapon].clip - p->clip_ammo, take = (int)fminf(need, p->ammo[p->weapon]);
+        if (take > 0 && ammo_of(p->weapon) >= 0) pack_take(pack, PACK_SLOTS, ammo_of(p->weapon), take);
         p->clip_ammo += take;
         p->ammo[p->weapon] -= take;
         p->reload_s = 0;
@@ -976,7 +594,7 @@ static void gun_tick(const Input *in, float dt)
     fire_weapon(PLAYER, aim_from, d);
 }
 
-// ---- loot from the dead
+// ---- loot from the dead: the body can be searched
 
 static bool dropped[MAX_PEDS];
 
@@ -986,65 +604,11 @@ static void drops_tick(void)
         Ped *p = &peds[i];
         if (!p->used) { dropped[i] = false; continue; }
         if (p->state != PS_DEAD || dropped[i]) continue;
+        if (pv[i].rag_s < 1.5f) continue;
         dropped[i] = true;
-        if (p->kind == PED_COP) {
-            pickup_drop(p->pos, rnd() & 1 ? PK_PISTOL : PK_AMMO, 0);
-        } else if (rnd() % 100 < 45) {
-            pickup_drop(p->pos, PK_CASH, 8 + rnd() % 55);
-        }
+        cont_drop(rag_centre(i), CT_CORPSE);
     }
 }
-
-static void init_loadout(void)
-{
-    ready = true;
-    Ped *p = &peds[PLAYER];
-    owned[W_PISTOL] = true;
-    stored_clip[W_PISTOL] = p->ammo[W_PISTOL] = weapons[W_PISTOL].clip;
-    place_pickups();
-}
-
-
-#ifdef COMBAT_TEST
-// OOP_SPAWN="c6 c8:1.5 a12 k10": civilian, car, cop on foot at that many metres ahead, optional :lateral
-static void test_spawn(void)
-{
-    const char *env = getenv("OOP_SPAWN");
-    Ped *p = &peds[PLAYER];
-    if (getenv("OOP_GIVE") && ticks == 5) { give_weapon(W_SMG, 150); give_weapon(W_SHOTGUN, 60); give_weapon(W_PISTOL, 60); }
-    if (getenv("OOP_SHOP") && ticks == 3) {
-        Shop *sh = &shops[atoi(getenv("OOP_SHOP")) % nshops];
-        Vector3 out = v3(sinf(sh->yaw), 0, cosf(sh->yaw));
-        p->pos = Vector3Add(sh->door, Vector3Scale(out, 0.4f));
-        p->pos.y = ground_y(p->pos.x, p->pos.z);
-        cam_yaw = sh->yaw + PI;
-        fprintf(stderr, "shop %d door %.1f %.1f\n", atoi(getenv("OOP_SHOP")) % nshops, sh->door.x, sh->door.z);
-    }
-    if (getenv("OOP_ANIM") && ticks > 40 && ticks % 90 == 0) {
-        static const int list[] = { A_INTERACT, A_TALK, A_COWER, A_PISTOL_AIM, A_HIT_HEAD, A_PISTOL_IDLE };
-        int k = (int)(ticks / 90 - 1) % 6;
-        for (int i = 1; i < MAX_PEDS; i++) if (peds[i].used && peds[i].kind == PED_CIV && peds[i].state == PS_IDLE) { peds[i].timer = 600; ped_play(i, list[k]); }
-        fprintf(stderr, "anim %d\n", list[k]);
-    }
-    if (!env || ticks != 30) return;
-    Vector3 f = v3(sinf(cam_yaw), 0, cosf(cam_yaw)), l = v3(-f.z, 0, f.x);
-    char buf[160];
-    snprintf(buf, sizeof buf, "%s", env);
-    for (char *tok = strtok(buf, " "); tok; tok = strtok(NULL, " ")) {
-        float d = atof(tok + 1), lat = strchr(tok, ':') ? atof(strchr(tok, ':') + 1) : 0;
-        Vector3 at = Vector3Add(p->pos, Vector3Add(Vector3Scale(f, d), Vector3Scale(l, lat)));
-        at.y = ground_y(at.x, at.z);
-        if (tok[0] == 'c' || tok[0] == 'k') {
-            int i = ped_spawn(tok[0] == 'k' ? PED_COP : PED_CIV, at, cam_yaw + PI);
-            if (i < 0) continue;
-            peds[i].state = PS_IDLE;
-            peds[i].timer = 600;
-            if (tok[0] == 'k') peds[i].weapon = W_PISTOL;
-        } else if (tok[0] == 'a') car_spawn(CAR_SEDAN, at, cam_yaw + PI / 2, AI_PARKED);
-        else if (tok[0] == 'b') car_spawn(CAR_SEDAN, at, cam_yaw, AI_PARKED);
-    }
-}
-#endif
 
 static void gun_gasp(void)
 {
@@ -1060,11 +624,15 @@ void combat_tick(const Input *in, float dt)
 {
     Ped *p = &peds[PLAYER];
     if (!p->used) return;
-    if (!ready) init_loadout();
-#ifdef COMBAT_TEST
-    test_spawn();
-#endif
+    ready = true;
     map_held = (in->held & BTN_MAP) != 0;
+    // ammo counts come from the pack
+    for (int w = W_PISTOL; w < W_COUNT; w++) {
+        int it = ammo_of(w);
+        p->ammo[w] = it >= 0 ? pack_count(it) : 0;
+    }
+    if (!weapon_owned(p->weapon)) weapon_stow();
+    if (!weapon_owned(wanted_weapon)) wanted_weapon = W_FIST;
     static int prev_mode;
     if (mode != prev_mode) { mode_since = game_s; prev_mode = mode; }
     shot_age += dt;
@@ -1075,12 +643,11 @@ void combat_tick(const Input *in, float dt)
     aim_target = -1;
     pending_tick(dt);
     drops_tick();
-    pickups_tick(dt);
 
-    bool free_hands = mode == MODE_PLAY && p->car < 0 && (p->state == PS_IDLE || p->state == PS_WALK);
+    bool free_hands = mode == MODE_PLAY && !ui_blocks_game && search_ci < 0 && p->car < 0 && (p->state == PS_IDLE || p->state == PS_WALK);
     if (free_hands) {
-        if (!shop_open && (in->hit & BTN_NEXT)) cycle_weapon(1);
-        if (!shop_open && (in->hit & BTN_PREV)) cycle_weapon(-1);
+        if (in->hit & BTN_NEXT) cycle_weapon(1);
+        if (in->hit & BTN_PREV) cycle_weapon(-1);
         // The hand travels to the belt, changes meshes there, then comes back.
         bool reaching = wanted_weapon != p->weapon;
         if (reaching || weapon_reach > 0) {
@@ -1088,7 +655,7 @@ void combat_tick(const Input *in, float dt)
             if (reaching && weapon_reach >= 1) equip(wanted_weapon);
             p->aiming = false;
             p->fire_cd -= dt;
-        } else if (p->weapon == W_FIST) { p->aiming = false; punch_tick(in, dt); }
+        } else if (p->weapon == W_FIST || p->weapon == W_BAT) { p->aiming = false; punch_tick(in, dt); }
         else gun_tick(in, dt);
     } else {
         wanted_weapon = p->weapon;
@@ -1097,5 +664,4 @@ void combat_tick(const Input *in, float dt)
         p->reload_s = 0;
         punch_t = -1;
     }
-    robbery_tick(dt);
 }

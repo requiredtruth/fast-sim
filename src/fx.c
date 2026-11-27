@@ -18,7 +18,7 @@ enum { SP_PUFF, SP_FIRE, SP_SPARK, SP_STREAK, SP_DEBRIS, SP_SHARD, SP_MUZZLE, SP
 
 typedef struct {
     Vector3 p, v;
-    float life, max, s0, s1, rot, spin, grav, drag;
+    float life, max, s0, s1, rot, spin, grav, drag, gy;
     Vector4 c0, c1;
     int sprite, kind;
     bool add, streak, bounce;
@@ -179,7 +179,7 @@ static Part *spawn(int sprite, int kind)
     Part *p = &parts[part_head];
     part_head = (part_head + 1) % MAX_PART;
     if (npart < MAX_PART) npart++;
-    *p = (Part){ .sprite = sprite, .kind = kind };
+    *p = (Part){ .sprite = sprite, .kind = kind, .gy = -1e9f };
     return p;
 }
 
@@ -335,6 +335,7 @@ void fx_burst(int kind, Vector3 p, Vector3 dir, int n)
         break; }
     case FX_DUST: smoke(p, dir, n, 0.9f, 1.4f, 0.55f, 0.5f); break;
     case FX_EXPLOSION: explosion(p); break;
+    case FX_STEAM: smoke(p, dir, n, 0.4f, 1.6f, 0.95f, 1.6f); break;
     case FX_WATER:
         for (int i = 0; i < n; i++) {
             Part *q = spawn(SP_DROP, FX_WATER);
@@ -362,7 +363,7 @@ void fx_skid(int key, Vector3 p, float width, bool on)
 {
     if (key < 0 || key >= SKID_KEYS) return;
     if (!on) { skid_on[key] = false; return; }
-    p.y = 0.03f;
+    p.y += 0.035f;
     if (skid_on[key]) {
         if (Vector3DistanceSqr(skid_last[key], p) < 0.04f) return;
         skids[skid_head] = (Skid){ skid_last[key], p, width, 0 };
@@ -395,9 +396,60 @@ int fx_lights(Vector3 *p, Vector3 *rgb, float *radius, int max)
 
 // ---------------------------------------------------------------- update
 
+// rain, snow and dust drift around the camera
+static void weather_fx(float dt)
+{
+    float k = quality == 0 ? 0.35f : quality == 1 ? 0.65f : 1;
+    Vector3 c = cam.position;
+    Vector3 f = Vector3Normalize(Vector3Subtract(cam.target, cam.position));
+    Vector3 wind = { weather_wind * 6, 0, weather_wind * 2.5f };
+    int nr = (int)(weather_rain * 70 * k + frand(0, 1));
+    for (int i = 0; i < nr; i++) {
+        Part *q = spawn(SP_STREAK, FX_RAIN);
+        q->p = Vector3Add(c, (Vector3){ frand(-16, 16) + f.x * 8, frand(2, 14), frand(-16, 16) + f.z * 8 });
+        q->v = Vector3Add((Vector3){ 0, -17, 0 }, wind);
+        q->life = q->max = 1.1f;
+        q->s0 = q->s1 = 0.018f;
+        q->streak = true;
+        q->c0 = (Vector4){ 0.7f, 0.75f, 0.8f, 0.35f }; q->c1 = q->c0;
+        q->gy = ground_y(q->p.x, q->p.z) - 0.5f;
+    }
+    int ns = (int)(weather_snow * 40 * k + frand(0, 1));
+    for (int i = 0; i < ns; i++) {
+        Part *q = spawn(SP_PUFF, FX_SNOW);
+        q->p = Vector3Add(c, (Vector3){ frand(-18, 18) + f.x * 8, frand(1, 12), frand(-18, 18) + f.z * 8 });
+        q->v = Vector3Add((Vector3){ frand(-0.4f, 0.4f), -1.6f, frand(-0.4f, 0.4f) }, Vector3Scale(wind, 0.4f));
+        q->life = q->max = 6;
+        q->s0 = q->s1 = frand(0.03f, 0.06f);
+        q->spin = frand(-1, 1);
+        q->c0 = (Vector4){ 1, 1, 1, 0.85f }; q->c1 = q->c0;
+        q->gy = ground_y(q->p.x, q->p.z);
+    }
+    if (weather_dust > 0.05f && frand(0, 1) < weather_dust * 0.6f * k) {
+        Part *q = spawn(SP_PUFF, FX_DUST);
+        q->p = Vector3Add(c, (Vector3){ frand(-20, 20) - wind.x * 2, frand(0, 4), frand(-20, 20) - wind.z * 2 });
+        q->v = Vector3Scale(wind, frand(1.2f, 2));
+        q->life = q->max = 4;
+        q->s0 = frand(1.5f, 3); q->s1 = q->s0 * 2;
+        q->rot = frand(0, 6.28f); q->spin = frand(-0.5f, 0.5f);
+        q->c0 = (Vector4){ 0.55f, 0.42f, 0.3f, 0.25f }; q->c1 = (Vector4){ 0.6f, 0.48f, 0.35f, 0 };
+    }
+}
+
+void fx_shift(Vector3 d)
+{
+    for (int i = 0; i < MAX_PART; i++) { parts[i].p = Vector3Subtract(parts[i].p, d); if (parts[i].gy > -1e8f) parts[i].gy -= d.y; }
+    for (int i = 0; i < MAX_DECAL; i++) decals[i].p = Vector3Subtract(decals[i].p, d);
+    for (int i = 0; i < MAX_SKID; i++) { skids[i].a = Vector3Subtract(skids[i].a, d); skids[i].b = Vector3Subtract(skids[i].b, d); }
+    for (int i = 0; i < SKID_KEYS; i++) skid_last[i] = Vector3Subtract(skid_last[i], d);
+    for (int i = 0; i < ntracer; i++) { tracers[i].a = Vector3Subtract(tracers[i].a, d); tracers[i].b = Vector3Subtract(tracers[i].b, d); }
+    for (int i = 0; i < nfxl; i++) fxl[i].p = Vector3Subtract(fxl[i].p, d);
+}
+
 void fx_tick(float dt)
 {
     if (!ready) fx_init();
+    weather_fx(dt);
     shake *= expf(-dt * 4.0f);
     if (shake < 0.002f) shake = 0;
 
@@ -412,14 +464,17 @@ void fx_tick(float dt)
         q->v = Vector3Scale(q->v, expf(-q->drag * dt));
         q->p = Vector3Add(q->p, Vector3Scale(q->v, dt));
         q->rot += q->spin * dt;
-        if (q->bounce && q->p.y < 0.02f && q->v.y < 0) {
-            q->p.y = 0.02f;
+        bool lands = q->bounce || q->kind == FX_BLOOD || q->kind == FX_WATER;
+        if (lands && q->gy < -1e8f) q->gy = ground_y(q->p.x, q->p.z);
+        if (q->kind == FX_RAIN || q->kind == FX_SNOW) { if (q->p.y < q->gy) q->life = 0; continue; }
+        if (q->bounce && q->p.y < q->gy + 0.02f && q->v.y < 0) {
+            q->p.y = q->gy + 0.02f;
             q->v.y *= -0.35f;
             q->v.x *= 0.6f; q->v.z *= 0.6f;
             q->spin *= 0.5f;
             if (q->kind == FX_SPARK) q->life = 0;
         }
-        if ((q->kind == FX_BLOOD || q->kind == FX_WATER) && q->p.y < 0.01f) q->life = 0;
+        if ((q->kind == FX_BLOOD || q->kind == FX_WATER) && q->p.y < q->gy + 0.01f) q->life = 0;
     }
     npart = live;
 

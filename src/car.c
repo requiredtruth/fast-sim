@@ -20,17 +20,24 @@ Car cars[MAX_CARS];
 #define S_REST 0.25f     // hardpoint to wheel centre at rest
 #define S_MAX 0.42f      // fully extended
 #define SUBSTEPS 2
-#define TRAFFIC_TARGET 48
-#define PARKED_TARGET 12
+#define TRAFFIC_TARGET 4
 
 typedef struct { float vmax, accel, grip; } Tune;
 
 static const Tune tune[CAR_MODELS] = {
-    [CAR_SEDAN] = { 52, 5.2f, 1.10f }, [CAR_COMPACT] = { 42, 4.4f, 1.10f }, [CAR_HATCH] = { 45, 4.8f, 1.10f },
-    [CAR_MINIVAN] = { 38, 3.6f, 1.00f }, [CAR_PICKUP] = { 41, 4.0f, 1.00f }, [CAR_SUV] = { 44, 4.2f, 1.05f },
-    [CAR_WAGON] = { 48, 4.6f, 1.10f }, [CAR_OFFROAD] = { 40, 4.0f, 1.05f }, [CAR_COP] = { 58, 6.0f, 1.15f },
-    [CAR_TAXI] = { 47, 4.8f, 1.10f },
+    [CAR_SEDAN] = { 50, 5.0f, 1.10f }, [CAR_HATCH] = { 44, 4.6f, 1.10f }, [CAR_WAGON] = { 47, 4.5f, 1.10f },
+    [CAR_PICKUP] = { 42, 4.2f, 1.02f }, [CAR_SUV] = { 44, 4.3f, 1.05f }, [CAR_VAN] = { 38, 3.6f, 1.00f },
+    [CAR_JEEP] = { 40, 4.4f, 1.08f }, [CAR_MUSCLE] = { 58, 6.4f, 1.12f }, [CAR_TRUCK] = { 32, 2.8f, 0.95f },
+    [CAR_RAIDER] = { 52, 6.0f, 1.12f },
 };
+// litres in the tank, fuel use multiplier, how well it copes off the asphalt (1 = like on the road)
+static const float tank[CAR_MODELS] = { 55, 42, 60, 80, 75, 70, 60, 65, 120, 45 };
+static const float thirst[CAR_MODELS] = { 1.0f, 0.75f, 1.0f, 1.3f, 1.25f, 1.2f, 1.1f, 1.45f, 1.8f, 1.15f };
+static const float rough[CAR_MODELS] = { 0.55f, 0.5f, 0.6f, 0.8f, 0.85f, 0.6f, 0.95f, 0.45f, 0.65f, 0.95f };
+static const char *names[CAR_MODELS] = { "Sedan", "Hatchback", "Station wagon", "Pickup", "SUV", "Van", "Jeep", "Muscle car",
+                                         "Box truck", "Raider buggy" };
+const char *car_name(int m) { return m >= 0 && m < CAR_MODELS ? names[m] : "Car"; }
+float car_kmh(const Car *c) { return fabsf(car_speed(c)) * 3.6f; }
 
 static const float gear_frac[5] = { 0.22f, 0.40f, 0.58f, 0.78f, 1.02f };
 
@@ -156,9 +163,8 @@ static Color random_paint(void)
 
 static int random_model(void)
 {
-    static const int tab[] = { CAR_SEDAN, CAR_SEDAN, CAR_SEDAN, CAR_COMPACT, CAR_COMPACT, CAR_HATCH, CAR_HATCH, CAR_HATCH,
-                               CAR_WAGON, CAR_WAGON, CAR_MINIVAN, CAR_PICKUP, CAR_PICKUP, CAR_SUV, CAR_SUV, CAR_OFFROAD,
-                               CAR_TAXI, CAR_SEDAN, CAR_HATCH, CAR_COMPACT };
+    static const int tab[] = { CAR_SEDAN, CAR_SEDAN, CAR_HATCH, CAR_HATCH, CAR_WAGON, CAR_WAGON, CAR_PICKUP, CAR_PICKUP,
+                               CAR_SUV, CAR_VAN, CAR_JEEP, CAR_MUSCLE, CAR_TRUCK, CAR_PICKUP, CAR_SEDAN, CAR_SUV };
     return tab[rnd() % (sizeof tab / sizeof *tab)];
 }
 
@@ -183,7 +189,13 @@ int car_spawn(int model, Vector3 p, float yaw, int ai)
     float gy = ground_y(p.x, p.z);
     Vector3 o = V(p.x, fmaxf(p.y, gy), p.z);
     c->pos = Vector3Add(o, qrot(c->rot, V(0, com_y(c), 0)));
-    c->paint = (model == CAR_COP || model == CAR_TAXI) ? WHITE : random_paint();
+    c->paint = random_paint();
+    if (model == CAR_RAIDER) c->paint = (Color){ 70, 60, 48, 255 };
+    c->fuel_max = tank[model];
+    c->fuel = c->fuel_max * 0.7f;
+    c->engine = 100; c->battery = 100; c->radiator = 100; c->heat = 0.3f;
+    for (int w = 0; w < 4; w++) c->tire[w] = 100;
+    c->cargo = -1;
     for (int w = 0; w < 4; w++) { c->wheel_ground[w] = true; ex[id].prev_c[w] = S_MAX - S_REST; }
     ex[id].asleep = ai == AI_PARKED;
     ex[id].speed_mul = frand(0.88f, 1.12f);
@@ -383,6 +395,8 @@ static void drive_gear(Car *c, Ex *x, float v, float thr, bool spinning, float d
     c->rpm = clampf(c->rpm, 0.1f, 1);
 }
 
+static const bool reverse_ok_when_stalled = false;
+
 static void step_car(int ci, float dt)
 {
     Car *c = &cars[ci];
@@ -403,6 +417,11 @@ static void step_car(int ci, float dt)
     float thr = clampf(c->throttle, 0, 1), brk = clampf(c->brake, 0, 1);
     if (x->water || c->ai == AI_WRECK) thr = brk = 0;
     float power = c->health < 150 ? 0.5f : c->health < 400 ? 0.8f : 1;
+    c->stalled = c->fuel <= 0 || c->engine < 12 || c->battery <= 0;
+    if (c->stalled && !reverse_ok_when_stalled) thr = 0;
+    power *= 0.4f + 0.6f * clampf(c->engine / 70, 0, 1);
+    if (c->heat > 1.0f) power *= 0.6f;
+    bool offroad = !on_road(c->pos.x, c->pos.z);
     bool reverse = false;
     if (brk > 0.05f && thr < 0.05f && vlong_body < 0.6f && !c->handbrake && !x->no_rev) reverse = true;
     float steer_in = clampf(c->steer, -1, 1);
@@ -431,6 +450,7 @@ static void step_car(int ci, float dt)
     float vabs = fabsf(vlong_body);
     bool braking_now = false;
     float vm = tn->vmax * 1.05f;
+    if (reverse && c->stalled) reverse = false;
     if (reverse) fdrive = -0.38f * tn->accel * mass * brk * clampf(1 - vabs * vabs / 110, 0, 1);
     else if (thr > 0.05f && vlong_body > -0.6f && x->shift_s <= 0.1f) {
         float f = tn->accel * mass * thr * clampf(1 - vlong_body * vlong_body / (vm * vm), 0, 1);
@@ -508,6 +528,9 @@ static void step_car(int ci, float dt)
         Vector3 lh = left_h(fh);
         float vl = dot2(hv[w], fh), vs = dot2(hv[w], lh);
         float mu = tn->grip * (front ? 1.05f : 1.0f);
+        if (c->tire[w] <= 0) mu *= 0.45f; else if (c->tire[w] < 25) mu *= 0.82f;
+        mu *= 1 - 0.16f * weather_rain - 0.32f * weather_snow;
+        if (offroad) mu *= 0.75f + 0.25f * rough[c->model];
         float fmax = mu * Nw;
         Vector3 f2 = V(0, 0, 0);
         Vector3 rlow = V(rl.x, rl.y * 0.2f, rl.z);
@@ -548,7 +571,7 @@ static void step_car(int ci, float dt)
         if (fabsf(vs) > 6) {
             float sgn = vs > 0 ? 1 : -1;
             Vector3 q = V(hp[w].x + lh.x * sgn * 0.5f, 0, hp[w].z + lh.z * sgn * 0.5f);
-            if (ground_y(q.x, q.z) - ground_y(hp[w].x, hp[w].z) > 0.06f && ground_y(q.x, q.z) < 1) {
+            if (ground_y(q.x, q.z) - ground_y(hp[w].x, hp[w].z) > 0.3f) {
                 float ft = fminf(mw * (fabsf(vs) - 4) / dt * 0.25f, 0.9f * mw * G * (fabsf(vs) - 4));
                 Vector3 tf = V(-lh.x * sgn * ft, 0, -lh.z * sgn * ft);
                 Vector3 rtrip = V(rl.x, -cy, rl.z);
@@ -582,6 +605,7 @@ static void step_car(int ci, float dt)
     float vh2 = len2(c->vel);
     if (vh2 > 0.01f) {
         float drag = 0.32f * vh2 * vh2 + 90 + (thr < 0.05f && !reverse ? mass * 0.05f : 0);
+        if (offroad) drag += mass * (1.15f - rough[c->model]) * (0.6f + 0.045f * vh2);
         drag = fminf(drag, mass * vh2 / dt * 0.5f);
         Vector3 d = Vector3Scale(V(c->vel.x, 0, c->vel.z), -drag / vh2);
         if (c->wheel_ground[0] || c->wheel_ground[1] || c->wheel_ground[2] || c->wheel_ground[3]) force = Vector3Add(force, d);
@@ -614,7 +638,8 @@ static void step_car(int ci, float dt)
 
     // water: engine out, sinks slowly
     Vector3 o = origin_of(c);
-    if (is_water(c->pos.x, c->pos.z) && o.y < 0.1f) {
+    (void)o;
+    if (is_water(c->pos.x, c->pos.z)) {
         if (!x->water) {
             x->water = true;
             fx_burst(FX_WATER, c->pos, V(0, 1, 0), 30);
@@ -624,7 +649,6 @@ static void step_car(int ci, float dt)
         force.y += mass * G * 0.9f;
         force = Vector3Add(force, Vector3Scale(c->vel, -mass * 2.2f));
         torque = Vector3Add(torque, Vector3Scale(c->angvel, -mass * 4));
-        if (c->pos.y < -4.2f) { force.y = 0; c->vel.y = fmaxf(c->vel.y, 0); c->pos.y = -4.2f; }
     }
 
     // integrate
@@ -663,7 +687,7 @@ static void wheel_fx(int ci, float dt)
         Vector3 rw = qrot(c->rot, V(m->wheel_pos[w].x, m->wheel_pos[w].y + S_REST - com_y(c), m->wheel_pos[w].z));
         Vector3 p = Vector3Add(c->pos, rw);
         p.y = ground_y(p.x, p.z);
-        bool road = p.y < 0.05f;
+        bool road = on_road(p.x, p.z);
         float fast = len2(c->vel);
         on = on && (fast > 2.5f || x->spin_w[w] == 0 || x->slip[w] > 1.3f);
         fx_skid(ci * 4 + w, p, m->wheel_r * 0.7f, on && road);
@@ -690,6 +714,14 @@ static void impact(int ci, Vector3 at, Vector3 n, float vn)
     x->crash_cd = 0.25f;
     crash_fx(at, n, vn);
     if (vn > 3) car_damage(ci, (vn - 3) * (vn - 3) * 0.8f, at, -1);
+    Car *c = &cars[ci];
+    if (vn > 5) {
+        float k = (vn - 5) * (vn - 5) * 0.06f * (c->armor ? 0.45f : 1);
+        bool front = Vector3DotProduct(Vector3Subtract(at, c->pos), car_fwd(c)) > 0.5f;
+        c->engine = fmaxf(0, c->engine - k * (front ? 1.0f : 0.35f));
+        c->radiator = fmaxf(0, c->radiator - k * (front ? 1.6f : 0.2f));
+        if (vn > 11 && frand(0, 1) < 0.35f) c->tire[rnd() % 4] = fmaxf(0, c->tire[rnd() % 4] - frand(20, 80));
+    }
     hit_driver(ci, vn);
 }
 
@@ -697,17 +729,16 @@ static void world_collide(int ci)
 {
     Car *c = &cars[ci];
     Foot f = foot_of(c);
-    BoundingBox bb[48];
-    int nb = world_boxes(c->pos, f.hl + f.hw + 1.5f, bb, 48);
+    WBox bb[48];
+    int nb = world_obox(c->pos, f.hl + f.hw + 1.5f, bb, 48);
     float bottom = origin_of(c).y + 0.28f, top = origin_of(c).y + car_models[c->model].size.y;
     float mass = car_models[c->model].mass_kg, ix, iy, iz;
     inertia(c, &ix, &iy, &iz);
     for (int pass = 0; pass < 2; pass++)
         for (int i = 0; i < nb; i++) {
-            const BoundingBox *b = &bb[i];
-            if (b->max.y < bottom || b->min.y > top) continue;
-            Foot bf = { V((b->min.x + b->max.x) * 0.5f, 0, (b->min.z + b->max.z) * 0.5f), V(1, 0, 0), V(0, 0, 1),
-                        (b->max.x - b->min.x) * 0.5f, (b->max.z - b->min.z) * 0.5f };
+            const WBox *b = &bb[i];
+            if (b->y1 < bottom || b->y0 > top) continue;
+            Foot bf = { V(b->c.x, 0, b->c.z), b->az, b->ax, b->hz, b->hx };
             f = foot_of(c);
             Vector3 n; float d;
             if (!sat(&f, &bf, &n, &d)) continue;
@@ -719,8 +750,11 @@ static void world_collide(int ci)
                 if (dd < bestd) { bestd = dd; pt = cp[k]; }
             }
             // contact point for the car's own faces: nearest point of the box
-            pt.x = clampf(pt.x, b->min.x, b->max.x); pt.z = clampf(pt.z, b->min.z, b->max.z);
-            if (bestd > 0) { pt = V(clampf(c->pos.x, b->min.x, b->max.x), 0, clampf(c->pos.z, b->min.z, b->max.z)); }
+            {
+                Vector3 q0 = bestd > 0 ? c->pos : pt;
+                float lx = clampf(dot2(Vector3Subtract(q0, bf.c), bf.l), -bf.hw, bf.hw), lz = clampf(dot2(Vector3Subtract(q0, bf.c), bf.f), -bf.hl, bf.hl);
+                pt = V(bf.c.x + bf.l.x * lx + bf.f.x * lz, 0, bf.c.z + bf.l.z * lx + bf.f.z * lz);
+            }
             Vector3 r = V(pt.x - c->pos.x, 0, pt.z - c->pos.z);
             Vector3 vp = Vector3Add(c->vel, Vector3CrossProduct(c->angvel, r));
             float vn = dot2(vp, n);
@@ -836,7 +870,7 @@ static void car_vs_peds(int ci)
         c->vel = Vector3Scale(c->vel, 0.97f);
         sfx(S_BODYFALL, p->pos, 0.8f, 1);
         fx_burst(FX_BLOOD, V(p->pos.x, p->pos.y + 1, p->pos.z), dir, 6);
-        if (c->driver == PLAYER) crime(CR_HIT_PED, p->pos, i);
+        (void)0;
     }
 }
 
@@ -1417,100 +1451,60 @@ static int count_ai(int kind)
 
 static bool try_spawn_traffic(Vector3 around, float rmin)
 {
-    if (nlanes <= 0) return false;
-    for (int tries = 0; tries < 24; tries++) {
-        // a point on the ring around the player, then the street under it
-        float a = frand(0, 2 * PI), r = frand(rmin, 150);
-        int l = nearest_lane(V(around.x + sinf(a) * r, 0, around.z + cosf(a) * r), 25);
-        if (l < 0) continue;
-        Lane *L = &lanes[l];
-        if (L->light < 0 || L->len < 25 || L->nnext == 0) continue;
-        float t = frand(5, L->len - 12);
+    for (int tries = 0; tries < 8; tries++) {
+        float s0 = road_s(around), ds = frand(rmin, 520) * (frand(0, 1) < 0.6f ? 1 : -1);
+        if (s0 + ds < 200) continue;
+        Vector3 dir;
+        Vector3 p = road_at(s0 + ds, &dir);
+        bool fwd_lane = frand(0, 1) < 0.5f;
+        Vector3 l = V(dir.z, 0, -dir.x);
+        p = Vector3Add(p, Vector3Scale(l, fwd_lane ? -1.85f : 1.85f));
+        int li = nearest_lane(p, 4);
+        if (li < 0 || lanes[li].nnext == 0) continue;
+        Lane *L = &lanes[li];
         Vector3 d = norm2(Vector3Subtract(L->b, L->a));
-        Vector3 p = Vector3Add(L->a, Vector3Scale(d, t));
-        float dist = len2(Vector3Subtract(p, around));
-        if (dist < rmin || dist > 200) continue;
-        if (in_view(p, 320)) continue;
-        if (ground_y(p.x, p.z) > 0.05f) continue;
+        if (in_view(p, 260)) continue;
         int model = random_model();
         float yaw = atan2f(d.x, d.z);
-        if (!spot_free(p, yaw, model, 5.0f)) continue;
+        if (!spot_free(p, yaw, model, 6.0f)) continue;
         int ci = car_spawn(model, p, yaw, AI_TRAFFIC);
         if (ci < 0) return false;
         Car *c = &cars[ci];
         ex[ci].asleep = false;
-        float v = L->speed * ex[ci].speed_mul * 0.8f;
+        float v = L->speed * ex[ci].speed_mul * 0.85f;
         c->vel = Vector3Scale(d, v);
+        c->fuel = c->fuel_max;
         for (int w = 0; w < 4; w++) ex[ci].spin_w[w] = v / car_models[model].wheel_r;
-        ex[ci].route[0] = l;
+        ex[ci].route[0] = li;
         route_fill(ci, 0, V(0, 0, 0));
-        c->lane = l;
-        c->lane_t = t;
-        if (spawn_driver(ci) < 0 && !test_no_peds) { c->used = false; return false; }
+        c->lane = li;
+        c->lane_t = Vector3Distance(L->a, p);
+        if (spawn_driver(ci) < 0) { c->used = false; return false; }
         return true;
-    }
-    return false;
-}
-
-static bool try_spawn_parked(Vector3 around, float rmin, float rmax)
-{
-    if (nlanes <= 0) return false;
-    for (int tries = 0; tries < 30; tries++) {
-        int l = (int)(rnd() % (uint32_t)nlanes);
-        Lane *L = &lanes[l];
-        if (L->light < 0 || L->len < 34) continue;
-        float t = frand(10, L->len - 16);
-        Vector3 d = norm2(Vector3Subtract(L->b, L->a));
-        Vector3 r = V(-d.z, 0, d.x);
-        Vector3 p = Vector3Add(L->a, Vector3Scale(d, t));
-        float dist = len2(Vector3Subtract(p, around));
-        if (dist < rmin || dist > rmax) continue;
-        float e = 0;
-        while (e < 8 && ground_y(p.x + r.x * e, p.z + r.z * e) < 0.05f) e += 0.25f;
-        if (e < 3.3f || e > 8) continue;
-        int model = random_model();
-        if (model == CAR_TAXI) model = CAR_SEDAN;
-        float hw = car_models[model].size.x * 0.5f;
-        float off = e - hw - 0.25f;
-        Vector3 spot = Vector3Add(p, Vector3Scale(r, off));
-        if (nearest_lane(spot, 2.3f) >= 0) continue;
-        float yaw = atan2f(d.x, d.z);
-        if (!spot_free(spot, yaw, model, 0.6f)) continue;
-        if (ground_y(spot.x, spot.z) > 0.05f) continue;
-        if (!test_no_peds && in_view(spot, 90) && dist > 25) continue;
-        int ci = car_spawn(model, spot, yaw + frand(-0.03f, 0.03f), AI_PARKED);
-        return ci >= 0;
     }
     return false;
 }
 
 static void manage_population(void)
 {
-    if (!nlanes) return;
     Vector3 pf = focus();
     bool initial = !popped || ticks < 90;
     int nt = count_ai(AI_TRAFFIC);
-    int budget = initial ? 5 : (ticks % 4 == 0 ? 1 : 0);
-    for (int k = 0; k < budget && nt < TRAFFIC_TARGET; k++)
-        if (try_spawn_traffic(pf, initial ? 25 : 40)) nt++;
-    int np = 0;
-    for (int i = 0; i < MAX_CARS; i++)
-        if (cars[i].used && cars[i].ai == AI_PARKED && len2(Vector3Subtract(cars[i].pos, pf)) < 200) np++;
-    int pb = initial ? 3 : (ticks % 8 == 0 ? 1 : 0);
-    for (int k = 0; k < pb && np < PARKED_TARGET; k++)
-        if (try_spawn_parked(pf, initial ? 10 : 70, initial ? 100 : 190)) np++;
+    int want = threat > 0.6f ? 1 : TRAFFIC_TARGET;
+    int budget = initial ? 2 : (ticks % 120 == 0 ? 1 : 0);
+    for (int k = 0; k < budget && nt < want; k++)
+        if (try_spawn_traffic(pf, initial ? 200 : 300)) nt++;
     popped = true;
 
     // despawn far or wedged cars when nobody is looking
     int i = (int)(ticks % MAX_CARS);
     Car *c = &cars[i];
-    if (!c->used || c->driver == PLAYER || i == peds[PLAYER].car) return;
+    if (!c->used || c->driver == PLAYER || i == peds[PLAYER].car || i == sv.home_car || c->owned) return;
     float d = len2(Vector3Subtract(c->pos, pf));
-    bool far = d > 180 && !in_view(c->pos, 330);   // recycled into the ring near the player
-    bool wedged = (c->ai == AI_TRAFFIC || c->ai == AI_FLEE) && c->stuck_s > 8 && !in_view(c->pos, 400);
-    bool junk = (c->ai == AI_NONE || c->ai == AI_WRECK || c->ai == AI_PARKED) && d > 300 && !in_view(c->pos, 500);
-    bool off_world = fabsf(c->pos.x) > WORLD_HALF + 60 || fabsf(c->pos.z) > WORLD_HALF + 60;
-    if ((far && (c->ai == AI_TRAFFIC || c->ai == AI_FLEE)) || wedged || junk || off_world || c->pos.y < -5.5f) car_remove(i);
+    bool far = d > 650 && !in_view(c->pos, 700);
+    bool wedged = (c->ai == AI_TRAFFIC || c->ai == AI_FLEE) && c->stuck_s > 12 && !in_view(c->pos, 400);
+    bool junk = !c->key && (c->ai == AI_NONE || c->ai == AI_WRECK || c->ai == AI_PARKED) && d > 700;
+    if ((far && (c->ai == AI_TRAFFIC || c->ai == AI_FLEE || c->ai == AI_COP)) || wedged || junk || c->pos.y < -60) car_remove(i);
 }
 
 // ---------------------------------------------------------------- per-car update
@@ -1549,7 +1543,40 @@ static void fire_and_smoke(int ci, float dt)
 
 static void lights_flags(Car *c)
 {
-    c->lights = night() && c->ai != AI_WRECK;
+    if (c->driver == PLAYER || c->owned) return;   // the player switches their own
+    c->lights = (night() || weather_fog > 0.4f || weather_dust > 0.4f) && c->ai != AI_WRECK && c->driver >= 0;
+}
+
+// what driving does to a car: fuel, heat, the battery and the tyres
+static void wear_tick(int ci, float dt)
+{
+    Car *c = &cars[ci];
+    if (c->ai == AI_WRECK) return;
+    float v = fabsf(car_speed(c));
+    bool running = c->driver >= 0 && !c->stalled;
+    if (running) {
+        float thr = clampf(c->throttle, 0, 1);
+        float rate = (0.0012f + 0.00045f * v + 0.005f * thr) * thirst[c->model];
+        if (c->driver != PLAYER) rate *= 0.2f;
+        c->fuel = fmaxf(0, c->fuel - rate * dt);
+        float cool = 0.012f + 0.03f * clampf(c->radiator / 100, 0, 1) + (world_temp() < 10 ? 0.01f : 0);
+        float hot = thr * 0.028f + (world_temp() > 30 ? 0.006f : 0);
+        c->heat = clampf(c->heat + (hot - cool * (c->heat > 0.5f ? 1 : 0.3f)) * dt, 0.2f, 1.3f);
+        if (c->heat > 1.0f) {
+            c->engine = fmaxf(0, c->engine - (c->heat - 1) * 6 * dt);
+            if ((ticks + ci) % 4 == 0) {
+                Vector3 hood = Vector3Add(Vector3Add(c->pos, Vector3Scale(car_fwd(c), half_l(c) - 0.6f)), V(0, 0.5f, 0));
+                fx_burst(FX_STEAM, hood, V(0, 1, 0), 1);
+            }
+        }
+        c->battery = fminf(100, c->battery + 0.4f * dt);
+        if (v > 3) {
+            bool off = !on_road(c->pos.x, c->pos.z);
+            for (int w = 0; w < 4; w++)
+                c->tire[w] = fmaxf(c->tire[w] > 0 ? 0.5f : 0, c->tire[w] - dt * (0.0012f * v * (off ? 2.5f : 1) + c->skid * 0.06f) * (c->driver == PLAYER ? 1 : 0));
+        }
+    } else if (c->lights) c->battery = fmaxf(0, c->battery - 0.05f * dt);
+    if (!running) c->heat += (0.3f - c->heat) * fminf(1, dt * 0.02f);
 }
 
 static void control(int ci, float dt)
@@ -1648,6 +1675,7 @@ void cars_tick(float dt)
         if (getenv("CAR_DBG3") && i == tcar && ticks % 30 == 0) printf("dv/dt %.2f speed %.1f\n", (c->vel.z - vb.z) / dt + (c->vel.x - vb.x) / dt, car_speed(c));
 #endif
         wheel_fx(i, dt);
+        wear_tick(i, dt);
         maybe_sleep(i, dt);
     }
 #ifdef CAR_TEST
@@ -1767,7 +1795,7 @@ void cars_draw(int pass)
         if (c->throttle < 0.05f && c->brake > 0.05f && car_speed(c) < 0.6f) flags |= 2;
         if (c->siren) flags |= 4;
         Color tint = c->paint;
-        if (c->model == CAR_COP || c->model == CAR_TAXI) tint = c->ai == AI_WRECK ? (Color){ 40, 38, 36, 255 } : WHITE;
+        if (c->ai == AI_WRECK) tint = (Color){ 34, 32, 30, 255 };
         tint.a = (unsigned char)flags;
         if (getenv("CAR_T")) tint = (Color){ 200, 200, 200, 0 };
         if (getenv("CAR_BS")) M = MatrixMultiply(MatrixScale(atof(getenv("CAR_BS")), atof(getenv("CAR_BS")), atof(getenv("CAR_BS"))), M);
@@ -1789,204 +1817,12 @@ void cars_draw(int pass)
     }
 }
 
-#ifdef CAR_TEST
-// scenario runner for runs/car, built with -DCAR_TEST, scenario picked by the CAR_TEST env var
-float cam_yaw, cam_pitch;
-static int tcar = -1, pursuer = -1;
-static Input tin;
-static int cam_mode;
-static const char *scen;
-static double t_sum; static long t_n;
-
-static void test_timing(struct timespec *t0)
+void cars_shift(Vector3 d)
 {
-    struct timespec t1;
-    clock_gettime(CLOCK_MONOTONIC, &t1);
-    t_sum += (t1.tv_sec - t0->tv_sec) * 1e6 + (t1.tv_nsec - t0->tv_nsec) / 1e3;
-    if (++t_n % 600 == 0) {
-        int n = 0;
-        for (int i = 0; i < MAX_CARS; i++) n += cars[i].used;
-        printf("cars_tick avg %.0f us over %ld ticks, %d cars\n", t_sum / t_n, t_n, n);
-    }
-}
-
-static bool avenue_lane(int skip, Vector3 *p, Vector3 *d)
-{
-    int seen = 0;
-    for (int l = 0; l < nlanes; l++)
-        if (lanes[l].speed > 16 && lanes[l].len > 50 && lanes[l].light >= 0 && seen++ >= skip) {
-            *d = norm2(Vector3Subtract(lanes[l].b, lanes[l].a));
-            *p = lanes[l].a;
-            return true;
-        }
-    return false;
-}
-
-static void test_setup(void)
-{
-    scen = getenv("CAR_TEST");
-    Vector3 p = { 0 }, d = { 0, 0, 1 };
-    test_no_peds = getenv("CAR_NOPEDS") != NULL;
-    int skip = getenv("CAR_LANE") ? atoi(getenv("CAR_LANE")) : 3;
-    avenue_lane(skip, &p, &d);
-    float yaw = atan2f(d.x, d.z);
-    if (getenv("CAR_AT_CURB")) {
-        Vector3 r = V(-d.z, 0, d.x);
-        float e = 0;
-        while (e < 12 && ground_y(p.x + r.x * e, p.z + r.z * e) < 0.05f) e += 0.1f;
-        p = Vector3Add(p, Vector3Scale(r, e - 2.2f));
-    }
-    if (!strcmp(scen, "wall")) {
-        // face a building straight across an avenue
-        for (int l = 0, seen = 0; l < nlanes; l++) {
-            if (lanes[l].speed < 16 || lanes[l].len < 50 || lanes[l].light < 0) continue;
-            Vector3 dd = norm2(Vector3Subtract(lanes[l].b, lanes[l].a));
-            Vector3 mid = Vector3Lerp(lanes[l].a, lanes[l].b, 0.5f);
-            bool done = false;
-            for (int side = -1; side <= 1 && !done; side += 2) {
-                Vector3 nd = Vector3Scale(left_h(dd), (float)side);
-                Hit h;
-                Vector3 o = V(mid.x, 0.9f, mid.z);
-                if (world_ray(o, nd, 80, &h) && h.t > 22 && h.t < 34 && seen++ >= skip) {
-                    p = mid; d = nd; yaw = atan2f(d.x, d.z);
-                    printf("wall %.0f m ahead at %.0f %.0f\n", h.t, p.x, p.z);
-                    done = true;
-                }
-            }
-            if (done) break;
-        }
-    }
-    if (!strcmp(scen, "water")) {
-        for (float z = -600; z < 600; z += 3)
-            for (float x = -600; x < 600; x += 3) {
-                if (fabsf(ground_y(x, z) - 0.05f) > 0.001f) continue;
-                Vector3 dirs[4] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
-                for (int k = 0; k < 4; k++) {
-                    float e = 0;
-                    while (e < 200 && fabsf(ground_y(x + dirs[k].x * e, z + dirs[k].z * e) - 0.05f) < 0.001f) e += 1;
-                    if (e > 30 && is_water(x + dirs[k].x * (e + 2), z + dirs[k].z * (e + 2)) && ground_y(x - dirs[k].x * 6, z - dirs[k].z * 6) < 0.06f) {
-                        p = V(x, 0.05f, z); d = dirs[k]; yaw = atan2f(d.x, d.z);
-                        printf("pier at %.0f %.0f dir %.0f %.0f len %.0f\n", x, z, d.x, d.z, e);
-                        goto found;
-                    }
-                }
-            }
-    }
-found:
-    if (strcmp(scen, "traffic")) {
-        int model = getenv("CAR_MODEL") ? atoi(getenv("CAR_MODEL")) : CAR_SEDAN;
-        tcar = car_spawn(model, Vector3Subtract(p, Vector3Scale(d, 0)), yaw, AI_NONE);
-        cars[tcar].paint = (Color){ 150, 24, 28, 255 };
-        ex[tcar].test_ctl = true;
-        ex[tcar].asleep = false;
-        float v0 = getenv("CAR_V0") ? (float)atof(getenv("CAR_V0")) : 0;
-        cars[tcar].vel = Vector3Scale(d, v0);
-        if (getenv("CAR_VSIDE")) cars[tcar].vel = Vector3Add(cars[tcar].vel, Vector3Scale(V(-d.z, 0, d.x), (float)atof(getenv("CAR_VSIDE"))));
-        if (!strcmp(scen, "fire")) cars[tcar].health = 140;
-        if (getenv("CAR_SIREN")) cars[tcar].siren = true;
-        if (!strcmp(scen, "cars")) {
-            Vector3 q = Vector3Add(p, Vector3Scale(d, 70));
-            int b = car_spawn(CAR_SUV, q, yaw + 1.5708f, AI_NONE);
-            cars[b].handbrake = true;
-            ex[b].test_ctl = true;
-        }
-        if (!strcmp(scen, "chase")) {
-            int b = car_spawn(CAR_COP, Vector3Subtract(p, Vector3Scale(d, 45)), yaw, AI_COP);
-            pursuer = b;
-            cars[b].siren = true;
-        }
-        if (!strcmp(scen, "cars2")) { // head-on-ish: second car comes the other way
-            Vector3 q = Vector3Add(p, Vector3Scale(d, 90));
-            int b = car_spawn(CAR_COMPACT, q, yaw + 3.14159f, AI_NONE);
-            cars[b].vel = Vector3Scale(d, -20);
-            cars[b].throttle = 0.5f;
-            ex[b].test_ctl = true;
-        }
-        peds[PLAYER].pos = p;
-    } else {
-        Vector3 q = police_pos;
-        peds[PLAYER].pos = q;
-    }
-}
-
-static void test_tick(float dt)
-{
-    static int calls;
-    peds[PLAYER].used = true;
-    if (++calls == 41 && nlanes) test_setup();
-    if (tcar >= 0 && cars[tcar].used) {
-        Car *c = &cars[tcar];
-        c->steer = tin.mx;
-        c->throttle = tin.my > 0 ? tin.my : 0;
-        c->brake = tin.my < 0 ? -tin.my : 0;
-        c->handbrake = tin.held & BTN_JUMP;
-        c->horn = tin.held & BTN_HORN;
-        if (ex[tcar].exploded) { c->throttle = c->brake = 0; }
-        ex[tcar].no_rev = false;
-        peds[PLAYER].pos = V(c->pos.x, 80, c->pos.z);
-        { static float minup = 2; float u = qrot(c->rot, V(0, 1, 0)).y; if (u < minup) { minup = u; if (u < 0.95f) printf("minup %.2f at t %.2f\n", u, game_s); } }
-        if (ticks % 15 == 0 && getenv("CAR_YAW"))
-            printf("yaw %.0f ", atan2f(car_fwd(c).x, car_fwd(c).z) * 57.3f);
-        if (ticks % 30 == 0)
-            printf("t %.1f v %.1f m/s %.0f km/h rpm %.2f gear %d skid %.2f hp %.0f fire %.1f pos %.0f %.0f y %.2f up %.2f\n", game_s,
-                   car_speed(c), car_speed(c) * 3.6f, c->rpm, ex[tcar].gear + 1, c->skid, c->health, c->fire_s, c->pos.x, c->pos.z, c->pos.y,
-                   qrot(c->rot, V(0, 1, 0)).y);
-    }
-    static int prev_lane[MAX_CARS]; static int crossed, ran_red, ran_yellow;
     for (int i = 0; i < MAX_CARS; i++) {
-        Car *c = &cars[i];
-        if (!c->used || c->ai != AI_TRAFFIC) { prev_lane[i] = -1; continue; }
-        int pl = prev_lane[i];
-        if (pl >= 0 && pl != c->lane && lanes[pl].light >= 0) {
-            crossed++;
-            int st = light_state(lanes[pl].light);
-            if (st == 2) ran_red++; else if (st == 1) ran_yellow++;
-        }
-        prev_lane[i] = c->lane;
+        if (!cars[i].used) continue;
+        cars[i].pos = Vector3Subtract(cars[i].pos, d);
+        ex[i].tgt_last = Vector3Subtract(ex[i].tgt_last, d);
+        for (int w = 0; w < 4; w++) fx_skid(i * 4 + w, cars[i].pos, 0.2f, false);
     }
-    if (ticks % 600 == 0) printf("crossed %d ran_red %d ran_yellow %d\n", crossed, ran_red, ran_yellow);
-    if (ticks % 120 == 0) {
-        int n = 0, moving = 0, drivers = 0, stuck = 0, parked = 0, asleep = 0;
-        for (int i = 0; i < MAX_CARS; i++) {
-            Car *c = &cars[i];
-            if (!c->used) continue;
-            if (c->ai == AI_PARKED) { parked++; asleep += ex[i].asleep; continue; }
-            if (c->ai != AI_TRAFFIC && c->ai != AI_FLEE) continue;
-            n++; moving += len2(c->vel) > 1.5f; drivers += c->driver >= 0; stuck += c->stuck_s > 3;
-        }
-        printf("t %.0f traffic %d moving %d drivers %d stuck %d parked %d asleep %d\n", game_s, n, moving, drivers, stuck, parked, asleep);
-    }
-    static int fleer = -1;
-    if (scen && !strcmp(scen, "traffic") && game_s > 3 && fleer < 0)
-        for (int i = 0; i < MAX_CARS; i++) if (cars[i].used && cars[i].ai == AI_TRAFFIC && cars[i].driver >= 0 && len2(cars[i].vel) > 5) { fleer = i; cars[i].ai = AI_FLEE; break; }
-    if (fleer >= 0 && cars[fleer].used && ticks % 60 == 0) printf("flee car %d ai %d v %.1f stuck %.1f\n", fleer, cars[fleer].ai, car_speed(&cars[fleer]), cars[fleer].stuck_s);
-    if (pursuer >= 0 && cars[pursuer].used && tcar >= 0) {
-        car_drive_to(pursuer, cars[tcar].pos, 45, true);
-        if (ticks % 60 == 0) printf("thr %.2f brk %.2f hb %d lane %d route %d  ", cars[pursuer].throttle, cars[pursuer].brake, cars[pursuer].handbrake, cars[pursuer].lane, ex[pursuer].route[0]);
-        if (ticks % 60 == 0) printf("chase dist %.1f pursuer v %.1f target v %.1f hp %.0f\n", Vector3Distance(cars[pursuer].pos, cars[tcar].pos), car_speed(&cars[pursuer]), car_speed(&cars[tcar]), cars[pursuer].health);
-    }
-    (void)dt;
 }
-
-void camera_update(const Input *in, float dt)
-{
-    tin = *in;
-    if (in->hit & BTN_CAM) cam_mode = (cam_mode + 1) % 6;
-    Vector3 at = tcar >= 0 && cars[tcar].used ? cars[tcar].pos : peds[PLAYER].pos;
-    Vector3 f = tcar >= 0 && cars[tcar].used ? norm2(car_fwd(&cars[tcar])) : V(0, 0, 1);
-    Vector3 l = left_h(f);
-    static Vector3 sm;
-    sm = Vector3Lerp(sm, at, 0.25f);
-    Vector3 pos, tgt = Vector3Add(at, V(0, 0.8f, 0));
-    switch (cam_mode) {
-    case 0: pos = Vector3Add(at, Vector3Add(Vector3Scale(f, -9), V(0, 3.2f, 0))); break;
-    case 1: pos = Vector3Add(at, Vector3Add(Vector3Scale(l, 8), Vector3Add(Vector3Scale(f, 4), V(0, 1.5f, 0)))); break;
-    case 2: pos = Vector3Add(sm, V(0, 55, -12)); tgt = sm; break;
-    case 3: pos = Vector3Add(sm, V(0, 150, -30)); tgt = sm; break;
-    case 4: pos = Vector3Add(at, Vector3Add(Vector3Scale(f, 12), Vector3Add(Vector3Scale(l, -3), V(0, 1.6f, 0)))); break;
-    default: pos = Vector3Add(at, Vector3Add(Vector3Scale(f, -22), V(0, 9, 0))); break;
-    }
-    cam = (Camera3D){ pos, tgt, { 0, 1, 0 }, 60, CAMERA_PERSPECTIVE };
-    (void)dt;
-}
-#endif

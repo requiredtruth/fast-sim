@@ -14,6 +14,8 @@ static float aim_k, car_k, clip_d = 4;
 static Vector3 pivot_s;
 static float car_yaw_s, car_off, car_poff;
 static bool was_car, back_view, started;
+static Vector3 cp, ct;
+float cam_touch_yaw, cam_touch_pitch;
 
 static float angle_diff(float from, float to)
 {
@@ -159,7 +161,6 @@ void camera_update(const Input *in, float dt)
             }
         }
     }
-    static Vector3 cp, ct;
     static float cf = 60;
     Vector3 fp, ft;
     float ff;
@@ -198,4 +199,12 @@ void camera_update(const Input *in, float dt)
         cam.target = Vector3Lerp(drone.t0, drone.t1, k);
         cam.fovy = 55;
     }
+}
+
+void camera_shift(Vector3 d)
+{
+    pivot_s = Vector3Subtract(pivot_s, d);
+    cp = Vector3Subtract(cp, d); ct = Vector3Subtract(ct, d);
+    cam.position = Vector3Subtract(cam.position, d); cam.target = Vector3Subtract(cam.target, d);
+    drone.at = Vector3Subtract(drone.at, d);
 }

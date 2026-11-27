@@ -1,9 +1,12 @@
 #ifndef CITY_H
 #define CITY_H
 
-// internals shared by world.c, render.c and fx.c. other modules only need light_add.
+// internals shared by road.c, paint.c, render.c and fx.c. other modules only need light_add.
 
-#ifdef __APPLE__
+#if defined(GRAPHICS_API_OPENGL_ES3)
+#include <GLES3/gl3.h>
+#define GLES 1
+#elif defined(__APPLE__)
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
 #else
@@ -11,7 +14,6 @@
 #endif
 #include "game.h"
 
-// raylib stores matrices field-by-field; MatrixToFloatV gives the column-major order GL wants
 static inline void gl_mat(GLint loc, Matrix m) { glUniformMatrix4fv(loc, 1, GL_FALSE, MatrixToFloatV(m).v); }
 
 typedef struct { float p[3], uv[2]; int8_t n[4]; uint8_t c[4]; float layer, seed; } Vtx;
@@ -27,31 +29,30 @@ enum {
     L_SIGN0, L_SIGN1, L_SIGN2, L_SIGN3, L_COUNT
 };
 
-// vertex flags, stored in c[3]
 enum {
-    F_WIN = 1,      // texture alpha is the glass mask: lit windows at night, sky reflection by day
-    F_CUT = 2,      // alpha tested
-    F_SELF = 4,     // glows at night, seed is the strength
-    F_GLASSY = 8,   // reflective curtain wall
-    F_BLEND = 16,   // sand into grass by seed
-    F_DECAL = 32,   // pulled toward the camera so paint sits on the road
-    F_INTER = 64,   // shop interior, lit from within
-    F_SIGNAL = 128  // traffic lamp, seed = group * 4 + lamp
+    F_WIN = 1, F_CUT = 2, F_SELF = 4, F_GLASSY = 8, F_BLEND = 16, F_DECAL = 32, F_INTER = 64, F_SIGNAL = 128
 };
 
-// world.c
+// paint.c
 extern GLuint world_tex, sig_tex;
 extern Vector2 layer_cells[L_COUNT];
+extern float layer_size[L_COUNT];
+void texture_build(int ts);
+
+// road.c
 void world_cull(Matrix vp, Vector3 center, float radius);
 void world_draw_part(int part);
 void world_frame(void);
 int  world_lamps(Vector3 near, Vector4 *out, int max);
-float world_coast(float x, float z);   // metres inland of the shoreline, negative at sea
+
+typedef struct { Vector3 c; float hx, hz, y0, y1; Vector3 ax, az; } WBox;   // oriented box: ax, az unit, horizontal
+int  world_obox(Vector3 c, float r, WBox *out, int max);
 
 // render.c
 #define MAX_LIGHTS 24
-void light_add(Vector3 p, Vector3 rgb, float radius);  // call every frame while the light is wanted
+void light_add(Vector3 p, Vector3 rgb, float radius);
 GLuint r_program(const char *vs, const char *fs);
+void r_set_offset(Vector3 off);       // translation for the static world geometry being drawn
 extern Matrix r_view, r_proj, r_vp;
 extern Vector3 r_cam_right, r_cam_up;
 extern Vector3 r_sun_col, r_amb_col, r_fog_col;

@@ -176,8 +176,8 @@ static void hands_up(int i, Quaternion *rot)
         int fa = skel.parent[hand[s]], ua = fa < 0 ? -1 : skel.parent[fa];
         if (ua < 0) continue;
         float side = s ? -1 : 1, n = jitter(i, game_s, s);
-        Quaternion up = QuaternionFromAxisAngle((Vector3){ 0, 1, 0 }, side * (2.3f + 0.08f * n) * w);
-        Quaternion fb = QuaternionFromAxisAngle((Vector3){ 0, 1, 0 }, side * (0.25f + 0.12f * jitter(i, game_s, s + 2)) * w);
+        Quaternion up = QuaternionFromAxisAngle((Vector3){ 0, 0, 1 }, -side * (2.5f + 0.08f * n) * w);
+        Quaternion fb = QuaternionFromAxisAngle((Vector3){ 1, 0, 0 }, -(0.5f + 0.12f * jitter(i, game_s, s + 2)) * w);
         rot[ua] = QuaternionMultiply(up, rot[ua]);
         rot[fa] = QuaternionMultiply(fb, rot[fa]);
     }
@@ -459,7 +459,8 @@ Vector3 ped_hand(const Ped *p)
 
 void peds_draw(int pass)
 {
-    static const Matrix grip = { -1, 0, 0, 0.0f, 0, 0, 1, 0.07f, 0, 1, 0, 0, 0, 0, 0, 1 };
+    // the hand bone frame matches the world in the bind pose (arm hanging down): gun +z runs down the fingers
+    static const Matrix grip = { 1, 0, 0, 0.0f, 0, 0, -1, -0.075f, 0, 1, 0, 0.03f, 0, 0, 0, 1 };
     float maxd = pass == PASS_SHADOW ? 55 : 150;
     for (int i = 0; i < MAX_PEDS; i++) {
         Ped *p = &peds[i];

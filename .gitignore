@@ -11,3 +11,4 @@ dist/
 sessions/
 builds/
 __pycache__/
+deps/
