@@ -81,6 +81,15 @@ build_android() {
     local plat
     plat="$(ls -d "$sdk"/platforms/android-* | sort -V | tail -1)/android.jar"
     local tc="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+    # raylib asks EGL for a GLES 2 context; the renderer needs GLES 3
+    local rlsrc="$ROOT/build/raylib-android"
+    if [[ ! -d "$rlsrc/src" ]]; then
+        mkdir -p "$rlsrc" && cp -r "$RAYLIB/src" "$rlsrc/src"
+        sed -i 's/EGL_CONTEXT_CLIENT_VERSION, 2,/EGL_CONTEXT_CLIENT_VERSION, 3,/' "$rlsrc/src/platforms/rcore_android.c"
+    fi
+    local RAYLIB_SAVE="$RAYLIB"
+    RAYLIB="$rlsrc"
+    GAMEFLAGS=(-std=gnu11 -O2 -DNDEBUG -w -Isrc -I"$RAYLIB/src" -DGAME_VERSION="\"$VERSION\"")
     local work=build/apk
     rm -rf "$work" && mkdir -p "$work/lib"
     for abi in arm64-v8a armeabi-v7a; do
@@ -96,8 +105,9 @@ build_android() {
         $cc -O2 -w -fPIC -c "$glue/android_native_app_glue.c" -o "build/glue-$abi/glue.o"
         $cc "${GAMEFLAGS[@]}" -fPIC -DPLATFORM_ANDROID -DGRAPHICS_API_OPENGL_ES3 -I"$glue" "${SRC[@]}" "build/glue-$abi/glue.o" \
             build/rl-android-$abi/libraylib.a -shared -o "$work/lib/$abi/libmain.so" \
-            -u ANativeActivity_onCreate -llog -landroid -lEGL -lGLESv3 -lOpenSLES -laaudio -lm -s
+            -u ANativeActivity_onCreate -llog -landroid -lEGL -lGLESv3 -laaudio -lm -s
     done
+    RAYLIB="$RAYLIB_SAVE"
     local code
     IFS=. read -r a b c <<< "$VERSION"
     code=$((10#$a * 1000000 + 10#$b * 1000 + 10#$c))

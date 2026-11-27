@@ -463,7 +463,7 @@ int mod_import_text(const char *name, const char *text)
     char path[400];
     MakeDirectory(mods_path);
     snprintf(path, sizeof path, "%s/%s", mods_path, file);
-    SaveFileText(path, (char *)text);
+    write_text(path, text);
 #endif
     mod_add(file, text);
     for (int i = 0; i < nmods; i++) if (!strcmp(mods[i].file, file) && !mods[i].on) mod_toggle(i);
@@ -498,7 +498,7 @@ static void mods_scan(void)
     MakeDirectory(mods_path);
     char ex[400];
     snprintf(ex, sizeof ex, "%s/example_mod.txt", mods_path);
-    if (!FileExists(ex)) SaveFileText(ex, (char *)EXAMPLE_MOD);
+    if (!FileExists(ex)) write_text(ex, EXAMPLE_MOD);
     const char *dirs[2] = { mods_path, NULL };
 #if defined(PLATFORM_DESKTOP)
     static char appmods[400];

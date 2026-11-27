@@ -499,6 +499,7 @@ void platform_vibrate(int ms);
 extern bool tilt_steer, tilt_walk, tilt_invert;    // settings
 void plat_put(const char *key, const char *val);
 char *plat_get(const char *key);   // malloc'd, or NULL
+bool write_text(const char *path, const char *text);
 extern float tilt_sens;
 
 // ---- main.c

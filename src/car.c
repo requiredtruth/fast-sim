@@ -1585,8 +1585,8 @@ static void control(int ci, float dt)
     Ex *x = &ex[ci];
     bool ai_ours = (c->ai == AI_TRAFFIC || c->ai == AI_FLEE) && c->driver >= 0 && c->driver != PLAYER && !x->exploded;
 #ifdef COPS_TEST
-    if (c->driver == PLAYER && getenv("OOP_AUTO") && ticks > 100) {
-        ai_lane_drive(ci, dt, 0, V(0, 0, 0), 24, getenv("OOP_AUTO")[0] == 'r');
+    if (0) {
+        ai_lane_drive(ci, dt, 0, V(0, 0, 0), 24, false);
         ai_apply_reverse(c, x, dt);
         return;
     }
@@ -1797,11 +1797,7 @@ void cars_draw(int pass)
         Color tint = c->paint;
         if (c->ai == AI_WRECK) tint = (Color){ 34, 32, 30, 255 };
         tint.a = (unsigned char)flags;
-        if (getenv("CAR_T")) tint = (Color){ 200, 200, 200, 0 };
-        if (getenv("CAR_BS")) M = MatrixMultiply(MatrixScale(atof(getenv("CAR_BS")), atof(getenv("CAR_BS")), atof(getenv("CAR_BS"))), M);
-        if (getenv("CAR_SKIP") && i == atoi(getenv("CAR_SKIP"))) continue;
-        if (getenv("CAR_ONLY") && i != atoi(getenv("CAR_ONLY"))) continue;
-        if (!getenv("CAR_NOBODY")) draw_mesh(m->body, M, tint, MAT_CAR);
+        draw_mesh(m->body, M, tint, MAT_CAR);
         Color wt = c->ai == AI_WRECK ? (Color){ 60, 60, 60, 255 } : WHITE;
         wt.a = 0;
         for (int w = 0; w < 4; w++) {
@@ -1812,7 +1808,7 @@ void cars_draw(int pass)
             Matrix yaw = MatrixRotateY(steer + (left ? 0 : PI));
             Matrix t = MatrixTranslate(m->wheel_pos[w].x, m->wheel_r + c->wheel_comp[w], m->wheel_pos[w].z);
             Matrix W = MatrixMultiply(MatrixMultiply(MatrixMultiply(spin, yaw), t), M);
-            if (!getenv("CAR_NOWHEEL")) draw_mesh(m->wheel, W, wt, MAT_CAR);
+            draw_mesh(m->wheel, W, wt, MAT_CAR);
         }
     }
 }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- the launcher icon: a road running to a sunset over the desert, drawn as vectors -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#2A3A6A" android:pathData="M0,0h108v52h-108z"/>
+    <path android:fillColor="#E8743A" android:pathData="M0,34h108v18h-108z"/>
+    <path android:fillColor="#FFC85A" android:pathData="M38,52a16,16 0,0 1,32 0z"/>
+    <path android:fillColor="#D8A866" android:pathData="M0,52h108v56h-108z"/>
+    <path android:fillColor="#2C2C30" android:pathData="M50,52h8l30,56h-68z"/>
+    <path android:fillColor="#FFD040" android:pathData="M53.4,60h1.2l0.4,8h-2z M52.6,74h2.8l0.7,12h-4.2z M51.4,94h5.2l1.2,14h-7.6z"/>
+</vector>

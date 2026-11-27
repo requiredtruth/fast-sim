@@ -957,7 +957,7 @@ bool game_save(void)
 #else
     char path[300];
     save_path(path, sizeof path);
-    return SaveFileText(path, buf);
+    return write_text(path, buf);
 #endif
 }
 

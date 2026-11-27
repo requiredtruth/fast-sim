@@ -180,8 +180,8 @@ void new_game(uint32_t seed)
         Stop *s = &stops[gas];
         car_at = stop_local(s, -4.0f, 3.2f);
         car_yaw = s->yaw + PI * 0.5f;
-        peds[PLAYER].pos = stop_local(s, -4.0f, 0.6f);
-        peds[PLAYER].yaw = s->yaw + PI;
+        peds[PLAYER].pos = stop_local(s, 0.8f, 3.2f);
+        peds[PLAYER].yaw = s->yaw - PI * 0.5f;
         hud_log_stop(s->name, 0);
         s->visited = true;
     }
@@ -239,11 +239,15 @@ static void title_camera(float dt)
     title_t += dt;
     Ped *p = &peds[PLAYER];
     Vector3 c = sv.home_car >= 0 && cars[sv.home_car].used ? cars[sv.home_car].pos : p->pos;
-    float a = title_t * 0.06f + 0.8f;
-    cam.position = (Vector3){ c.x + sinf(a) * 11, c.y + 3.2f, c.z + cosf(a) * 11 };
-    cam.target = (Vector3){ c.x, c.y + 1.0f, c.z };
+    // swing slowly on the road side of the station, never through the buildings
+    float base = 0;
+    for (int i = 0; i < MAX_STOPS; i++) if (stops[i].used && stops[i].km < 0.6f) base = stops[i].yaw;
+    float a = base + 0.75f * sinf(title_t * 0.05f);
+    cam.position = (Vector3){ c.x + sinf(a) * 15, c.y + 4.2f, c.z + cosf(a) * 15 };
+    cam.position.y = fmaxf(cam.position.y, ground_y(cam.position.x, cam.position.z) + 2.5f);
+    cam.target = (Vector3){ c.x, c.y + 1.2f, c.z };
     cam.up = (Vector3){ 0, 1, 0 };
-    cam.fovy = 50;
+    cam.fovy = 52;
 }
 
 static void start_play(void)
@@ -360,7 +364,7 @@ int main(int argc, char **argv)
 #if defined(PLATFORM_ANDROID)
     quality = 0;
 #elif defined(PLATFORM_WEB)
-    quality = 1;
+    quality = is_touch_device() ? 0 : 1;
 #endif
     settings_load();
     if (t_quality >= 0) quality = t_quality;

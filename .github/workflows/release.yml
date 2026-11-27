@@ -1,51 +1,59 @@
-name: Fast Sim release
+name: Long Road builds
 on:
   push:
-    branches: [main]
-    paths: [RELEASE, .github/workflows/release.yml]
+    branches: [main, 'ccr-*']
   workflow_dispatch:
 permissions:
   contents: write
 concurrency:
-  group: fast-sim-release
-  cancel-in-progress: false
+  group: longroad-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24.x'
-          cache: false
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Install Android tools
+      - name: Install tools
         run: |
-          sdk="$RUNNER_TEMP/fast-sim-sdk"
-          mkdir -p "$sdk/platforms" "$sdk/build-tools"
-          curl --retry 3 -fsSL https://dl.google.com/android/repository/platform-35_r02.zip -o "$sdk/platform.zip"
-          curl --retry 3 -fsSL https://dl.google.com/android/repository/build-tools_r35_linux.zip -o "$sdk/tools.zip"
-          unzip -q "$sdk/platform.zip" -d "$sdk/platforms"
-          unzip -q "$sdk/tools.zip" -d "$sdk/build-tools"
-          mv "$sdk/build-tools/android-15" "$sdk/build-tools/35.0.0"
-          echo "ANDROID_SDK_ROOT=$sdk" >> "$GITHUB_ENV"
-      - name: Build and verify packages
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg mingw-w64 libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev zip > /dev/null
+          git clone --depth 1 -b 5.5 https://github.com/raysan5/raylib deps/raylib
+          git clone --depth 1 https://github.com/emscripten-core/emsdk deps/emsdk
+          deps/emsdk/emsdk install 3.1.74 > /dev/null
+          deps/emsdk/emsdk activate 3.1.74 > /dev/null
+      - name: Linux and Windows
+        run: bash build.sh linux windows
+      - name: Browser
+        run: |
+          source deps/emsdk/emsdk_env.sh
+          bash build.sh web
+      - name: Android
         env:
-          FAST_SIM_SIGNING_KEY: ${{ secrets.FAST_SIM_SIGNING_KEY }}
-          FAST_SIM_KEYSTORE_PASSWORD: ${{ secrets.FAST_SIM_KEYSTORE_PASSWORD }}
+          LONGROAD_SIGNING_KEY: ${{ secrets.LONGROAD_SIGNING_KEY }}
+          LONGROAD_KEYSTORE_PASSWORD: ${{ secrets.LONGROAD_KEYSTORE_PASSWORD }}
         run: |
-          if [[ -n "$FAST_SIM_SIGNING_KEY" ]]; then
-            export FAST_SIM_KEYSTORE="$RUNNER_TEMP/fast-sim.p12"
-            printf '%s' "$FAST_SIM_SIGNING_KEY" | base64 -d > "$FAST_SIM_KEYSTORE"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          if [[ -n "$LONGROAD_SIGNING_KEY" ]]; then
+            export LONGROAD_KEYSTORE="$RUNNER_TEMP/longroad.p12"
+            printf '%s' "$LONGROAD_SIGNING_KEY" | base64 -d > "$LONGROAD_KEYSTORE"
           fi
-          bash scripts/package.sh
-      - name: Publish tagged release
+          bash build.sh android
+      - name: Check sizes
+        run: |
+          cd dist && sha256sum LongRoad* > SHA256SUMS.txt && ls -l
+          total=$(find . -type f -printf '%s\n' | awk '{t+=$1} END {print t}')
+          echo "total $total bytes"
+          [[ $total -lt 100000000 ]]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LongRoad
+          path: dist/*
+      - name: Publish the release
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="$(cat RELEASE)"
-          if gh release view "$tag" >/dev/null 2>&1; then exit 0; fi
-          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "Fast Sim: Dustbound $tag" --notes-file RELEASE-NOTES.md
+          tag="$(head -1 RELEASE)"
+          if gh release view "$tag" > /dev/null 2>&1; then echo "release $tag exists"; exit 0; fi
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "Long Road $tag" --notes-file RELEASE-NOTES.md

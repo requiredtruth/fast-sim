@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#14161a">
+<title>Long Road</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #14161a; overflow: hidden; touch-action: none;
+               -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  #boot { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+          color: #e8c48c; font: 600 28px/1.3 system-ui, sans-serif; letter-spacing: 0.08em; background: #14161a; z-index: 2; }
+  #boot small { color: #9aa0aa; font-size: 14px; letter-spacing: 0.04em; margin-top: 10px; font-weight: 400; }
+  #bar { width: 240px; height: 4px; background: #2a2d33; margin-top: 18px; border-radius: 2px; overflow: hidden; }
+  #bar i { display: block; height: 100%; width: 10%; background: #ff9933; transition: width 0.3s; }
+  #turn { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; text-align: center;
+          color: #e8c48c; font: 600 20px system-ui, sans-serif; background: #14161a; z-index: 3; padding: 24px; }
+  @media (orientation: portrait) and (pointer: coarse) { #turn { display: flex; } }
+</style>
+</head>
+<body>
+<div id="boot">LONG ROAD<small>painting the road...</small><div id="bar"><i id="fill"></i></div></div>
+<div id="turn">Turn your phone sideways to drive</div>
+<canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+<script>
+  var fill = document.getElementById('fill');
+  var Module = {
+    canvas: document.getElementById('canvas'),
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.warn(t); },
+    setStatus: function (t) {
+      var m = t.match(/\((\d+(\.\d+)?)\/(\d+)\)/);
+      if (m) fill.style.width = (100 * m[1] / m[3]) + '%';
+    },
+    onRuntimeInitialized: function () { fill.style.width = '100%'; },
+    postRun: [function () { document.getElementById('boot').style.display = 'none'; }],
+  };
+  // phones: go fullscreen and landscape on the first tap
+  var goFull = function () {
+    var el = document.documentElement;
+    if (!document.fullscreenElement && el.requestFullscreen && matchMedia('(pointer: coarse)').matches) {
+      el.requestFullscreen({ navigationUI: 'hide' }).then(function () {
+        if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () {});
+      }).catch(function () {});
+    }
+  };
+  window.addEventListener('touchend', goFull, { once: true });
+  // keep the page still under the fingers
+  document.addEventListener('touchmove', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>

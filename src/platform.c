@@ -100,6 +100,18 @@ EM_JS(void, web_tilt_listen, (void), {
     } else attach();
 });
 
+EM_JS(void, web_pick_mod, (void), {
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.txt,text/plain';
+    input.onchange = function () {
+        var f = input.files[0];
+        if (!f) return;
+        f.text().then(function (t) { Module.ccall('web_import_mod', 'number', ['string', 'string'], [f.name, t]); });
+    };
+    input.click();
+});
+
 EM_JS(int, web_is_touch, (void), { return ('ontouchstart' in window) || navigator.maxTouchPoints > 0 ? 1 : 0; });
 EM_JS(void, web_vibrate, (int ms), { if (navigator.vibrate) navigator.vibrate(ms); });
 
@@ -194,7 +206,7 @@ void plat_put(const char *key, const char *val)
 {
     char path[600];
     snprintf(path, sizeof path, "%s/%s.txt", save_dir(), key);
-    SaveFileText(path, (char *)val);
+    write_text(path, val);
 }
 char *plat_get(const char *key)
 {
@@ -208,3 +220,14 @@ char *plat_get(const char *key)
     return r;
 }
 #endif
+
+// raylib's own writer moves paths around on Android; plain stdio writes exactly where asked
+bool write_text(const char *path, const char *text)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    size_t n = strlen(text);
+    bool ok = fwrite(text, 1, n, f) == n;
+    fclose(f);
+    return ok;
+}
